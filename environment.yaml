@@ -1,0 +1,21 @@
+name: gp_inference
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - scikit-learn
+  - scipy
+  - pip
+  - matplotlib
+  - seaborn
+  - tqdm
+  - pip:
+    - torch
+    - botorch==0.16.1
+    - gpytorch
+    - bayeso-benchmarks
+    # linear_operator is installed automatically as a dependency of gpytorch
