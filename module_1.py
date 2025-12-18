@@ -1,6 +1,13 @@
 import os
+# Fix for OMP: Error #15 (Multiple OpenMP runtimes linking)
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
 import sys
 import random
+import argparse
+import datetime
+import glob
+import yaml
 import torch
 import numpy as np
 import pandas as pd
@@ -20,7 +27,25 @@ from datatools import get_comparisons, apply_sigmoid
 
 def main():
     # --- 3. EXPERIMENT PARAMETERS ---
-    SEED = 42
+    # Load configuration
+    parser = argparse.ArgumentParser(description="Run GP Experiment")
+    parser.add_argument("--config", type=str, default="config.yaml", help="Path to config file")
+    args = parser.parse_args()
+
+    config_path = args.config
+    if not os.path.isabs(config_path):
+        config_path = os.path.join(os.path.dirname(__file__), config_path)
+
+    if not os.path.exists(config_path):
+        print(f"Error: Config file not found at {config_path}")
+        sys.exit(1)
+
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    exp_config = config['experiment']
+
+    SEED = exp_config['seed']
     random.seed(SEED)
     np.random.seed(SEED)
     torch.manual_seed(SEED)
@@ -29,26 +54,44 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    FITNESS_FUNCTIONS = ['ackley', 'gramacy_and_lee', 'cosines']
-    NOISE_TYPES = ['gaussian'] # Add 'poisson' if you've configured noise_params
-    KERNEL_NAMES = ['squared_exponential', 'matern_5_2', 'matern_3_2', 'exponential']#, 'linear']#, 'periodic']
-    GP_TYPES = ['PairwiseGP', 'ExactGP']
-    params = {'g_std' : 1.1, 'h_std': 0.1 , 'amplitude_factor': 0.5  } # Params for GP noise
+    FITNESS_FUNCTIONS = exp_config['fitness_functions']
+    NOISE_TYPES = exp_config['noise_types']
+    KERNEL_NAMES = exp_config['kernel_names']
+    params = exp_config['noise_params']
     
     # Data and Training constants
-    NSAMPLES = 96
-    NOISE = False
-    TRAINING_ITERS = 200
-    LR = 0.1
-    D = 1 # Dimension (used by BayesoFitnessFunction)
+    NSAMPLES = exp_config['nsamples']
+    NOISE = exp_config['noise']
+    TRAINING_ITERS = exp_config['training_iters']
+    LR = exp_config['lr']
+    D = exp_config['dimension']
 
     # Define fixed sigmoid parameters
-    SIGMOID_K = 2.0
-    SIGMOID_X0 = 5.0
+    SIGMOID_K = exp_config['sigmoid']['k']
+    SIGMOID_X0 = exp_config['sigmoid']['x0']
 
     # --- 4. MAIN EXPERIMENT LOOP ---
-    output_dir = "experiments"
+    base_dir = "experiments"
+    os.makedirs(base_dir, exist_ok=True)
+
+    today_str = datetime.datetime.now().strftime("%d%m%y")
+    existing_dirs = glob.glob(os.path.join(base_dir, f"experiments_{today_str}_*"))
+    run_ids = []
+    for d in existing_dirs:
+        if os.path.isdir(d):
+            try:
+                run_id = int(os.path.basename(d).split('_')[-1])
+                run_ids.append(run_id)
+            except ValueError:
+                pass
+
+    run_of_day = max(run_ids) + 1 if run_ids else 0
+    output_dir = os.path.join(base_dir, f"experiments_{today_str}_{run_of_day}")
     os.makedirs(output_dir, exist_ok=True)
+
+    # Save experiment ID to a file so run_experiment.sh can read it
+    with open(".last_experiment_id", "w") as f:
+        f.write(f"{today_str}_{run_of_day}")
     print(f"--- Saving experiment CSVs to ./{output_dir} ---")
 
     metadata_list = []
@@ -87,13 +130,13 @@ def main():
 
                 df1_train_data = {
                         'fold': 0,
-                        'X': X_train.flatten(),
+                        'X': X_train.flatten() if D == 1 else X_train.tolist(),
                         'y_true': Y_train.flatten().numpy()
                     }
 
                 df1_test_data = {
                         'fold': 1,
-                        'X': X_test.flatten(),
+                        'X': X_test.flatten() if D == 1 else X_test.tolist(),
                         'y_true': Y_test.flatten().numpy()
                     }
             else:
@@ -104,14 +147,14 @@ def main():
 
                 df1_train_data = {
                         'fold': 0,
-                        'X': X_train.flatten(),
+                        'X': X_train.flatten() if D == 1 else X_train.tolist(), # to make it fit in the df when dimension is higher
                         'y_true': Y_train.flatten().numpy(),
                         'y_noisy': Y_noisy.flatten().numpy()
                     }
 
                 df1_test_data = {
                         'fold': 1,
-                        'X': X_test.flatten(),
+                        'X': X_test.flatten() if D == 1 else X_test.tolist(),
                         'y_true': Y_test.flatten().numpy(),
                         'y_noisy': np.nan,
                     }
@@ -179,7 +222,7 @@ def main():
                     if NOISE == True:
                         df1['y_noisy_sigmoid'] = apply_sigmoid(df1['y_noisy'], k=SIGMOID_K, x0=SIGMOID_X0).numpy()
 
-                    df1_filename = f"{model_name}_{fn_name}_{noise_type}_{kernel_name}.csv"
+                    df1_filename = f"{model_name}_{fn_name}_{D}D_{noise_type}_{kernel_name}.csv"
                     df1_filepath = os.path.join(output_dir, df1_filename)
                     df1.to_csv(df1_filepath, index=False)
                     
@@ -190,7 +233,7 @@ def main():
 
                     metadata_list.append({
                         "id": experiment_id, "GP": model_name, "FitnessFn": fn_name,
-                        "seed": SEED, "Noise_type": noise_type, "noise_level": noise_level,
+                        "dimension": D, "seed": SEED, "Noise_type": noise_type, "noise_level": noise_level,
                         "kernel": kernel_name, "nll": train_nll, "kendal_tau": tau,
                         "kendal_tau_sigmoid": tau_sig
                         })
@@ -274,7 +317,7 @@ def main():
                         df1['y_noisy_sigmoid'] = apply_sigmoid(df1['y_noisy'], k=SIGMOID_K, x0=SIGMOID_X0).numpy()
 
 
-                    df1_filename = f"{model_name}_{fn_name}_{noise_type}_{kernel_name}.csv"
+                    df1_filename = f"{model_name}_{fn_name}_{D}D_{noise_type}_{kernel_name}.csv"
                     df1_filepath = os.path.join(output_dir, df1_filename)
                     df1.to_csv(df1_filepath, index=False)
 
@@ -285,7 +328,7 @@ def main():
 
                     metadata_list.append({
                         "id": experiment_id, "GP": model_name, "FitnessFn": fn_name,
-                        "seed": SEED, "Noise_type": noise_type, "noise_level": noise_level,
+                        "dimension": D, "seed": SEED, "Noise_type": noise_type, "noise_level": noise_level,
                         "kernel": kernel_name, "nll": train_nll, "kendal_tau": tau,
                         "kendal_tau_sigmoid": tau_sig
                         })
@@ -303,12 +346,12 @@ def main():
     # --- Re-order and Display Results ---
     try:
         final_columns = [
-            'id', 'GP', 'FitnessFn', 'seed', 'Noise_type', 'noise_level', 'kernel',
+            'id', 'GP', 'FitnessFn', 'dimension', 'seed', 'Noise_type', 'noise_level', 'kernel',
             'nll', 'kendal_tau', 'kendal_tau_sigmoid'
         ]
         df2_final = df2.reindex(columns=final_columns)
 
-        df2_filepath = "experiment_summary.csv"
+        df2_filepath = os.path.join(output_dir, f"summary_{today_str}_{run_of_day}.csv")
         df2_final.to_csv(df2_filepath, index=False)
         print(f"Experiment summary saved to {df2_filepath}")
 

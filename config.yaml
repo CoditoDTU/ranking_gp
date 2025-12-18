@@ -1,0 +1,29 @@
+experiment:
+  seed: 42
+  fitness_functions:
+    - ackley
+    - gramacy_and_lee
+    - cosines
+  noise_types:
+    - gaussian
+  kernel_names:
+    - squared_exponential
+    - matern_5_2
+    - matern_3_2
+    - exponential
+  # Note: GP_TYPES is currently reference-only in the script logic
+  gp_types:
+    - PairwiseGP
+    - ExactGP
+  noise_params:
+    g_std: 1.1
+    h_std: 0.1
+    amplitude_factor: 0.5
+  nsamples: 96
+  noise: false
+  training_iters: 200
+  lr: 0.1
+  dimension: 1
+  sigmoid:
+    k: 2.0
+    x0: 5.0

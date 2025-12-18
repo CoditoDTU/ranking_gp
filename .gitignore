@@ -2,3 +2,5 @@
 src/__pycache__/
 
 experiments/
+
+.last_experiment_id
