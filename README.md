@@ -13,9 +13,10 @@ ranking_gp/
 ├── run_experiment.sh        # Pipeline script to run training and plotting sequentially
 ├── ytrue_vs_ypred.py        # Plotting script for Ground Truth vs Prediction grids
 ├── src/                     # Source code for models and utilities
-│   ├── fitness_functions.py
-│   ├── models.py
-│   └── ...
+│   ├── datatools.py         # Helper functions
+│   ├── fitness_functions.py # Benchmark functions
+│   ├── models.py            # GP Model definitions
+│   └── noise.py             # Noise generation logic
 ```
 
 ## Installation
@@ -79,10 +80,15 @@ Modify `config.yaml` to change experiment parameters such as `fitness_functions`
 All results are saved in the `experiments/` directory.
 
 ### Folder Structure
-Each run of `module_1.py` creates a new subfolder named with the date and a run counter:
-`experiments/experiments_DDMMYY_ID/`
-
-Example: `experiments/experiments_181225_0/` (First run on Dec 18, 2025).
+```text
+experiments/
+└── experiments_DDMMYY_ID/                    # e.g., experiments_181225_0
+    ├── summary_DDMMYY_ID.csv                 # Metrics summary
+    ├── PairwiseGP_ackley_1D_none_matern_5_2.csv
+    └── plots/                                # Generated visualizations
+        ├── ackley_1D_grid_ytrue_vs_y_pred.pdf
+        └── ackley_1D_ExactGP_fit.pdf
+```
 
 ### Folder Contents
 Inside an experiment folder, you will find:
