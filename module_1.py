@@ -26,6 +26,19 @@ from models import FlexibleExactGPModel, build_kernel
 from noise import add_noise
 from datatools import get_comparisons, apply_sigmoid
 
+class Logger(object):
+    def __init__(self, filename):
+        self.terminal = sys.stdout
+        self.log = open(filename, "a")
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
 def main():
     # Suppress GPyTorch warning about input matching stored training data
     warnings.filterwarnings("ignore", message="The input matches the stored training data")
@@ -92,6 +105,9 @@ def main():
     run_of_day = max(run_ids) + 1 if run_ids else 0
     output_dir = os.path.join(base_dir, f"experiments_{today_str}_{run_of_day}")
     os.makedirs(output_dir, exist_ok=True)
+
+    # Redirect stdout to a log file in the experiment directory
+    sys.stdout = Logger(os.path.join(output_dir, f"experiment_{today_str}_{run_of_day}_log.txt"))
 
     # Save experiment ID to a file so run_experiment.sh can read it
     with open(".last_experiment_id", "w") as f:
