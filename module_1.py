@@ -13,10 +13,16 @@ import torch
 import numpy as np
 import pandas as pd
 import gpytorch
+import linear_operator
 from scipy.stats import kendalltau
 from botorch.models import PairwiseGP
 from botorch.models.pairwise_gp import PairwiseLaplaceMarginalLogLikelihood
 from gpytorch.likelihoods import GaussianLikelihood
+
+# Increase default jitter for numerical stability
+linear_operator.settings.cholesky_jitter._global_float_value = 1e-4
+linear_operator.settings.cholesky_jitter._global_double_value = 1e-3
+linear_operator.settings.cholesky_jitter._global_half_value = 1e-2
 
 # Add src to path so we can import modules from it
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
@@ -79,9 +85,28 @@ def main():
     # Data and Training constants
     NSAMPLES = exp_config['nsamples']
     NOISE = exp_config['noise']
-    TRAINING_ITERS = exp_config['training_iters']
-    LR = exp_config['lr']
     D = exp_config['dimension']
+
+    # PairwiseGP settings
+    PAIRWISE_TRAINING_ITERS = exp_config['pairwise_gp']['training_iters']
+    PAIRWISE_LR = exp_config['pairwise_gp']['lr']
+    PAIRWISE_OPTIMIZER = exp_config['pairwise_gp']['optimizer']
+
+    # ExactGP settings
+    EXACT_TRAINING_ITERS = exp_config['exact_gp']['training_iters']
+    EXACT_LR = exp_config['exact_gp']['lr']
+    EXACT_OPTIMIZER = exp_config['exact_gp']['optimizer']
+
+    # Helper function to get optimizer
+    def get_optimizer(optimizer_name, parameters, lr):
+        if optimizer_name == 'Adam':
+            return torch.optim.Adam(parameters, lr=lr)
+        elif optimizer_name == 'SGD':
+            return torch.optim.SGD(parameters, lr=lr)
+        elif optimizer_name == 'AdamW':
+            return torch.optim.AdamW(parameters, lr=lr)
+        else:
+            raise ValueError(f"Unknown optimizer: {optimizer_name}")
 
     # Define fixed sigmoid parameters
     SIGMOID_K = exp_config['sigmoid']['k']
@@ -150,7 +175,7 @@ def main():
             Y_train = torch.Tensor(fitness_fn.output(X_train)) # X_train cannot be a tensor for the bayeso function
 
             if NOISE == False:
-                comparisons = get_comparisons(Y_train) # For PairwiseGP
+                comparisons, X_train_pairwise = get_comparisons(Y_train, X=X_train_tensor) # For PairwiseGP
                 print(f"\n--- No Noise ---")
                 noise_level = 0.0 # Set noise level for metadata
                 noise_type = 'none' # Ensure noise_type is set for metadata
@@ -158,7 +183,7 @@ def main():
                 noise_level = params.get('g_std', 0.0)
                 print(f"\n--- Noise Type: {noise_type} ---")
                 Y_noisy = add_noise(Y_train, noise_type='gaussian', noise_params=params)
-                comparisons = get_comparisons(Y_noisy) # For PairwiseGP
+                comparisons, X_train_pairwise = get_comparisons(Y_noisy, X=X_train_tensor) # For PairwiseGP
 
             for kernel_name in KERNEL_NAMES:
                 print(f"\n----- Kernel: {kernel_name} -----")
@@ -190,103 +215,127 @@ def main():
                         }
 
                 ########## --- Run PairwiseGP ---################################################################
-                try:
-                    model_name = "PairwiseGP"
-                    print(f"Training {model_name}...")
+                # try:  # COMMENTED OUT FOR DEBUGGING - uncomment when done
 
-                    kernel_bt = build_kernel(kernel_name, D) # KERNEL
-                    model_bt = PairwiseGP(X_train_tensor, comparisons, covar_module=kernel_bt)# GP
-                    mll_bt = PairwiseLaplaceMarginalLogLikelihood(model_bt.likelihood,model= model_bt) # MARGINAL Log likelihood
-                    optimizer_bt = torch.optim.Adam(model_bt.parameters(), lr=LR) # Optimizer
+                model_name = "PairwiseGP"
+                print(f"Training {model_name}...")
 
-                    # Send to device
-                    model_bt.to(device)
-                    mll_bt.to(device)
+                kernel_bt = build_kernel(kernel_name, D) # KERNEL
+                model_bt = PairwiseGP(X_train_pairwise, comparisons, covar_module=kernel_bt, consolidate_atol=0.0)# GP
+                mll_bt = PairwiseLaplaceMarginalLogLikelihood(model_bt.likelihood,model= model_bt) # MARGINAL Log likelihood
+                optimizer_bt = get_optimizer(PAIRWISE_OPTIMIZER, model_bt.parameters(), PAIRWISE_LR) # Optimizer
+                
 
-                    # Training:
-                    model_bt.train()
-                    losses = []
-                    # print(f"1. X_train_tensor (Input) device: {X_train_tensor.device}")
-                    # try:
-                    #     model_device = next(model_bt.parameters()).device
-                    #     print(f"2. Model Parameters Device: {model_device}")
-                    # except StopIteration:
-                    #     print("2. Model has no parameters (requires setup before moving).")
+                # Send to device
+                model_bt.to(device)
+                mll_bt.to(device)
 
-                    # # --- FIX END ---
-                    # print(f"4. Model's internal target (Y_train) device: {model_bt.train_targets.device}")
+                # Training:
+                model_bt.train()
+                losses = []
 
-                    for i in range(TRAINING_ITERS):
-                        optimizer_bt.zero_grad() # zero grads
+                for i in range(PAIRWISE_TRAINING_ITERS):
 
-                        output = model_bt(model_bt.unconsolidated_datapoints) # forward
-                        loss = -mll_bt(output, model_bt.train_targets) # Loss calc
-                        loss.backward() # Backprop
+                    optimizer_bt.zero_grad() # zero grads
+                    output = model_bt(model_bt.datapoints) # forward
+                    loss = -mll_bt(output, model_bt.train_targets) # Loss calc
+                    loss.backward() # Backprop
 
-                        optimizer_bt.step() # Optimizer step
-                        losses.append(loss.item())
+                    optimizer_bt.step() # Optimizer step
+                    losses.append(loss.item())
 
-                    # Testing:
-                    model_bt.eval() # Eval mode
-
-                    with torch.no_grad():
-                        # Predict on train points
-                        posterior_train_bt = model_bt.posterior(X_train_tensor.to(device))
-                        y_pred_train_bt = posterior_train_bt.mean.squeeze().cpu().numpy()
-                        variance_train_bt = posterior_train_bt.variance.squeeze().detach().cpu().numpy()
-                        std_train_bt = np.sqrt(variance_train_bt)
-
-                        # Predict on test points
-                        posterior_test_bt = model_bt.posterior(X_test_tensor.to(device))
-                        y_pred_test_bt = posterior_test_bt.mean.squeeze().cpu().numpy()
-                        variance_test_bt = posterior_test_bt.variance.squeeze().detach().cpu().numpy()
-                        std_test_bt = np.sqrt(variance_test_bt)
-
-                        train_output = model_bt(model_bt.unconsolidated_datapoints)
-                        train_nll = -mll_bt(train_output, model_bt.train_targets).item()
-
-                        ### Extract lengthscale
+                    if (i+1) % 20 == 0:
                         try:
-                            ls_tensor = model_bt.covar_module.base_kernel.lengthscale
-                            ls_bt = ls_tensor.detach().cpu().numpy().flatten()
-                            if ls_bt.size == 1:
-                                ls_bt = ls_bt.item()
-                            else:
-                                ls_bt = str(ls_bt.tolist())
+                            ls = model_bt.covar_module.base_kernel.lengthscale.item()
+                            print(f"  Iter {i+1} - Loss: {loss.item():.4f} - Lengthscale: {ls:.3f}")
                         except AttributeError:
-                            ls_bt = np.nan
+                            print(f"  Iter {i+1} - Loss: {loss.item():.4f}")
 
-                    # --- Build and Save df1 ---
-                    df1_train = pd.DataFrame(df1_train_data)
-                    df1_train['y_pred'] = y_pred_train_bt
-                    df1_train['variance'] = variance_train_bt
-                    df1_train['std'] = std_train_bt
-                    df1_train['lengthscale'] = ls_bt
-                    df1_test = pd.DataFrame(df1_test_data)
-                    df1_test['y_pred'] = y_pred_test_bt
-                    df1_test['variance'] = variance_test_bt
-                    df1_test['std'] = std_test_bt
-                    df1_test['lengthscale'] = ls_bt
-                    df1 = pd.concat([df1_train, df1_test]).reset_index(drop=True)
+                # Testing:
+                model_bt.eval() # Eval mode
 
-                    df1_filename = f"{model_name}_{fn_name}_{D}D_{noise_type}_{kernel_name}.csv"
-                    df1_filepath = os.path.join(output_dir, df1_filename)
-                    df1.to_csv(df1_filepath, index=False)
+                with torch.no_grad():
                     
-                    # --- Calculate metrics for df2 ---
-                    df1_test_only = df1[df1['fold'] == 1]
-                    tau, _ = kendalltau(df1_test_only['y_true'], df1_test_only['y_pred'])
+                    # Predict on train points
+                    posterior_train_bt = model_bt.posterior(X_train_tensor.to(device))
+                    y_pred_train_bt = posterior_train_bt.mean.squeeze().cpu().numpy()
+                    variance_train_bt = posterior_train_bt.variance.squeeze().detach().cpu().numpy()
+                    std_train_bt = np.sqrt(variance_train_bt)
 
-                    metadata_list.append({
-                        "id": experiment_id, "GP": model_name, "FitnessFn": fn_name,
-                        "dimension": D, "seed": SEED, "Noise_type": noise_type, "noise_level": noise_level,
-                        "kernel": kernel_name, "nll": train_nll, "kendal_tau": tau})
-                    experiment_id += 1
+                    # Predict on test points
+                    posterior_test_bt = model_bt.posterior(X_test_tensor.to(device))
+                    y_pred_test_bt = posterior_test_bt.mean.squeeze().cpu().numpy()
+                    variance_test_bt = posterior_test_bt.variance.squeeze().detach().cpu().numpy()
+                    std_test_bt = np.sqrt(variance_test_bt)
 
-                except Exception as e:
-                    print(f"ERROR training {model_name} with {kernel_name}: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    train_output = model_bt(model_bt.datapoints)
+                    train_nll_bt = -mll_bt(train_output, model_bt.train_targets).item()
+
+                # Compute Proxy Test NLL for PairwiseGP
+                # Create test comparisons from true test labels
+                test_comparisons = get_comparisons(Y_test)
+
+                # Create proxy model with test data structure
+                proxy_kernel = build_kernel(kernel_name, D)
+                model_proxy = PairwiseGP(X_test_tensor, test_comparisons, covar_module=proxy_kernel, consolidate_atol=0.0).double()
+
+                # Copy learned hyperparameters from trained model
+                model_proxy.covar_module.load_state_dict(model_bt.covar_module.state_dict())
+                mll_proxy = PairwiseLaplaceMarginalLogLikelihood(model_proxy.likelihood, model_proxy)
+
+                # Evaluate NLL in train mode
+                model_proxy.train()
+                with torch.no_grad():
+                    output_proxy = model_proxy(model_proxy.datapoints)
+                    test_nll_bt = -mll_proxy(output_proxy, model_proxy.train_targets).item()
+
+                # Cleanup proxy model
+                del model_proxy, mll_proxy, proxy_kernel
+
+                with torch.no_grad():
+                    ### Extract lengthscale
+                    try:
+                        ls_tensor = model_bt.covar_module.base_kernel.lengthscale
+                        ls_bt = ls_tensor.detach().cpu().numpy().flatten()
+                        if ls_bt.size == 1:
+                            ls_bt = ls_bt.item()
+                        else:
+                            ls_bt = str(ls_bt.tolist())
+                    except AttributeError:
+                        ls_bt = np.nan
+
+                # --- Build and Save df1 ---
+                df1_train = pd.DataFrame(df1_train_data)
+                df1_train['y_pred'] = y_pred_train_bt
+                df1_train['variance'] = variance_train_bt
+                df1_train['std'] = std_train_bt
+                df1_train['lengthscale'] = ls_bt
+                df1_test = pd.DataFrame(df1_test_data)
+                df1_test['y_pred'] = y_pred_test_bt
+                df1_test['variance'] = variance_test_bt
+                df1_test['std'] = std_test_bt
+                df1_test['lengthscale'] = ls_bt
+                df1 = pd.concat([df1_train, df1_test]).reset_index(drop=True)
+
+                df1_filename = f"{model_name}_{fn_name}_{D}D_{noise_type}_{kernel_name}.csv"
+                df1_filepath = os.path.join(output_dir, df1_filename)
+                df1.to_csv(df1_filepath, index=False)
+
+                # --- Calculate metrics for df2 ---
+                df1_test_only = df1[df1['fold'] == 1]
+                tau, _ = kendalltau(df1_test_only['y_true'], df1_test_only['y_pred'])
+
+                metadata_list.append({
+                    "id": experiment_id, "GP": model_name, "FitnessFn": fn_name,
+                    "dimension": D, "seed": SEED, "Noise_type": noise_type, "noise_level": noise_level,
+                    "kernel": kernel_name, "train_nll": train_nll_bt, "test_nll": test_nll_bt,
+                    "kendal_tau": tau})
+                experiment_id += 1
+
+                # except Exception as e:  # COMMENTED OUT FOR DEBUGGING - uncomment when done
+                #     print(f"ERROR training {model_name} with {kernel_name}: {e}")
+                #     import traceback
+                #     traceback.print_exc()
                 
                 # Cleanup PairwiseGP memory to prevent crashes during inference
                 if 'model_bt' in locals(): del model_bt
@@ -317,36 +366,28 @@ def main():
                     mll_reg = gpytorch.mlls.ExactMarginalLogLikelihood(ll, model_reg) # mll
                     mll_reg.to(device, dtype=torch.double) # Sent to device
 
-                    optimizer_reg = torch.optim.Adam(model_reg.parameters(), lr=LR) # Optimizer
+                    optimizer_reg = get_optimizer(EXACT_OPTIMIZER, model_reg.parameters(), EXACT_LR) # Optimizer
 
                     # Training
                     model_reg.train()
                     ll.train()
 
                     losses = []
-                    # print(f"1. X_train_reg (Input) device: {X_train_reg.device}")
-                    # print(f"1.1 Y_train_reg (Input) device: {Y_train_reg.device}")
-                    # print(f"1.1 Xtest_train_reg (Input) device: {X_test_tensor.device}") 
-                    # try:
-                    #     model_device = next(model_reg.parameters()).device
-                    #     print(f"2. Model Parameters Device: {model_device}")
-                    # except StopIteration:
-                    #     print("2. Model has no parameters (requires setup before moving).")
-                    # try:
-                    #     likelihood_device = next(ll.parameters()).device
-                    #     print(f"3. Likelihood (ll) device: {likelihood_device}")
-                    # except StopIteration:
-                    #     print("3. Likelihood device check failed (no parameters found).")
-                    # # --- FIX END ---
-                    # print(f"4. Model's internal target (Y_train) device: {model_reg.train_targets.device}")
 
-                    for i in range(TRAINING_ITERS):
-                        optimizer_reg.zero_grad() 
+                    for i in range(EXACT_TRAINING_ITERS):
+                        optimizer_reg.zero_grad()
                         output = model_reg(X_train_reg)
                         loss = -mll_reg(output, Y_train_reg).sum()
                         loss.backward()
                         optimizer_reg.step()
                         losses.append(loss.item())
+
+                        if (i+1) % 20 == 0:
+                            try:
+                                ls = model_reg.covar_module.base_kernel.lengthscale.item()
+                                print(f"  Iter {i+1} - Loss: {loss.item():.4f} - Lengthscale: {ls:.3f}")
+                            except AttributeError:
+                                print(f"  Iter {i+1} - Loss: {loss.item():.4f}")
 
                     model_reg.eval()
                     ll.eval()
@@ -364,9 +405,15 @@ def main():
                         variance_test_reg = posterior_test_reg.variance.cpu().numpy()
                         std_test_reg = np.sqrt(variance_test_reg)
 
-                        train_output = model_reg(X_train_reg) # logits
-                        train_nll = -mll_reg(train_output, model_reg.train_targets).item() # nll for training after trainig
-                        
+                        # Compute train NLL
+                        train_output = model_reg(X_train_reg)
+                        pred_dist_train = ll(train_output)
+                        train_nll_reg = -pred_dist_train.log_prob(Y_train_reg).sum().item()
+
+                        # Compute test NLL
+                        pred_dist_test = ll(model_reg(X_test_reg))
+                        test_nll_reg = -pred_dist_test.log_prob(Y_test.to(device, dtype=torch.double)).sum().item()
+
                         # Extract lengthscale
                         try:
                             ls_tensor = model_reg.covar_module.base_kernel.lengthscale
@@ -404,9 +451,10 @@ def main():
                     metadata_list.append({
                         "id": experiment_id, "GP": model_name, "FitnessFn": fn_name,
                         "dimension": D, "seed": SEED, "Noise_type": noise_type, "noise_level": noise_level,
-                        "kernel": kernel_name, "nll": train_nll, "kendal_tau": tau})
+                        "kernel": kernel_name, "train_nll": train_nll_reg, "test_nll": test_nll_reg,
+                        "kendal_tau": tau})
                     experiment_id += 1
-                    
+
                 except Exception as e:
                     print(f"ERROR training {model_name} with {kernel_name}: {e}")
                     import traceback
@@ -433,7 +481,7 @@ def main():
     try:
         final_columns = [
             'id', 'GP', 'FitnessFn', 'dimension', 'seed', 'Noise_type', 'noise_level', 'kernel',
-            'nll', 'kendal_tau']
+            'train_nll', 'test_nll', 'kendal_tau']
         df2_final = df2.reindex(columns=final_columns)
 
         df2_filepath = os.path.join(output_dir, f"summary_{today_str}_{run_of_day}.csv")
