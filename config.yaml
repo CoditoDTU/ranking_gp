@@ -2,8 +2,19 @@ experiment:
   seed: 42
   fitness_functions:
     - ackley
-    - gramacy_and_lee
+    - gramacy_and_lee 
     - cosines
+    - levy 
+  #  - bohachevsky  # Arrays must be the same length. 2D fixed
+    - sphere
+    - sum_of_different_powers 
+    - power_sum 
+    - zakharov
+  #  - rosenbrock # assert_dim problem > 1 dimensions more than 1 
+    - dixon_price 
+    - michalewicz # matrix mult problem
+  #  - branin  # Arrays must be the same length.  2D
+  #  - colville # Error code 12 (Cannot allocate memory) 4D
   noise_types:
     - gaussian
   kernel_names:
@@ -19,11 +30,21 @@ experiment:
     g_std: 1.1
     h_std: 0.1
     amplitude_factor: 0.5
-  nsamples: 96
-  noise: false
-  training_iters: 200
-  lr: 0.1
+  nsamples: 30
+  noise: False
   dimension: 1
+
+  # PairwiseGP training settings
+  pairwise_gp:
+    training_iters: 50
+    lr: 0.0001
+    optimizer: Adam  # Options: Adam, SGD, AdamW
+
+  # ExactGP training settings
+  exact_gp:
+    training_iters: 1000
+    lr: 0.1
+    optimizer: Adam  # Options: Adam, SGD, AdamW
   sigmoid:
     k: 2.0
     x0: 5.0

@@ -10,9 +10,22 @@ def apply_sigmoid(f: torch.Tensor, k: float, x0: float) -> torch.Tensor:
     return 1.0 / (1.0 + torch.exp(-k * (f - x0)))
 
 
-# --- Comparisons function --- 
-def get_comparisons(y_dp, epsilon=0.01):
+# --- Comparisons function ---
+def get_comparisons(y_dp, X=None, epsilon=0):
+    """
+    Generate pairwise comparisons from y values.
 
+    Args:
+        y_dp: Target values tensor
+        X: Optional input features tensor. If provided, returns the subset of X
+           corresponding to datapoints that appear in comparisons.
+        epsilon: Minimum difference threshold for valid comparisons
+
+    Returns:
+        If X is None: comparisons tensor with original indices
+        If X is provided: (comparisons_remapped, X_subset) where comparisons_remapped
+            contains indices into X_subset
+    """
     sorted_y, sort_idx = torch.sort(y_dp.flatten(), descending=True)
     utility_matrix = sorted_y.unsqueeze(1) - sorted_y.unsqueeze(0) #get's us the NxN matrix
 
@@ -31,4 +44,18 @@ def get_comparisons(y_dp, epsilon=0.01):
 
     comparisons = torch.stack([original_i, original_j], dim=1)
 
-    return comparisons
+    if X is None:
+        return comparisons
+
+    # Extract only datapoints that appear in comparisons and remap indices
+    unique_indices = torch.unique(comparisons.flatten()).sort().values
+    X_subset = X[unique_indices]
+
+    # Remap comparison indices to the new reduced tensor
+    index_map = {old_idx.item(): new_idx for new_idx, old_idx in enumerate(unique_indices)}
+    comparisons_remapped = torch.tensor(
+        [[index_map[c[0].item()], index_map[c[1].item()]] for c in comparisons],
+        dtype=comparisons.dtype
+    )
+
+    return comparisons_remapped, X_subset
