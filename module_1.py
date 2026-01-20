@@ -14,7 +14,9 @@ import numpy as np
 import pandas as pd
 import gpytorch
 import linear_operator
-from scipy.stats import kendalltau
+from scipy.stats import kendalltau, spearmanr
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 from botorch.models import PairwiseGP
 from botorch.models.pairwise_gp import PairwiseLaplaceMarginalLogLikelihood
 from gpytorch.likelihoods import GaussianLikelihood
@@ -142,6 +144,9 @@ def main():
     metadata_list = []
     experiment_id = 0
 
+    # Store training losses for plotting: {fn_name: {kernel_name: {'ExactGP': [...], 'PairwiseGP': [...]}}}
+    training_losses = {}
+
     for fn_name in FITNESS_FUNCTIONS:
         print(f"\n======================================")
         print(f"Testing Fitness Function: {fn_name}")
@@ -251,11 +256,18 @@ def main():
                         except AttributeError:
                             print(f"  Iter {i+1} - Loss: {loss.item():.4f}")
 
+                # Store PairwiseGP losses for plotting
+                if fn_name not in training_losses:
+                    training_losses[fn_name] = {}
+                if kernel_name not in training_losses[fn_name]:
+                    training_losses[fn_name][kernel_name] = {}
+                training_losses[fn_name][kernel_name]['PairwiseGP'] = losses.copy()
+
                 # Testing:
                 model_bt.eval() # Eval mode
 
                 with torch.no_grad():
-                    
+
                     # Predict on train points
                     posterior_train_bt = model_bt.posterior(X_train_tensor.to(device))
                     y_pred_train_bt = posterior_train_bt.mean.squeeze().cpu().numpy()
@@ -324,12 +336,13 @@ def main():
                 # --- Calculate metrics for df2 ---
                 df1_test_only = df1[df1['fold'] == 1]
                 tau, _ = kendalltau(df1_test_only['y_true'], df1_test_only['y_pred'])
+                spearman, _ = spearmanr(df1_test_only['y_true'], df1_test_only['y_pred'])
 
                 metadata_list.append({
                     "id": experiment_id, "GP": model_name, "FitnessFn": fn_name,
                     "dimension": D, "seed": SEED, "Noise_type": noise_type, "noise_level": noise_level,
                     "kernel": kernel_name, "train_nll": train_nll_bt, "test_nll": test_nll_bt,
-                    "kendal_tau": tau})
+                    "kendal_tau": tau, "spearman": spearman})
                 experiment_id += 1
 
                 # except Exception as e:  # COMMENTED OUT FOR DEBUGGING - uncomment when done
@@ -389,6 +402,9 @@ def main():
                             except AttributeError:
                                 print(f"  Iter {i+1} - Loss: {loss.item():.4f}")
 
+                    # Store ExactGP losses for plotting
+                    training_losses[fn_name][kernel_name]['ExactGP'] = losses.copy()
+
                     model_reg.eval()
                     ll.eval()
 
@@ -447,12 +463,13 @@ def main():
                     # --- Calculate metrics for df2 ---
                     df1_test_only = df1[df1['fold'] == 1]
                     tau, _ = kendalltau(df1_test_only['y_true'], df1_test_only['y_pred'])
+                    spearman, _ = spearmanr(df1_test_only['y_true'], df1_test_only['y_pred'])
 
                     metadata_list.append({
                         "id": experiment_id, "GP": model_name, "FitnessFn": fn_name,
                         "dimension": D, "seed": SEED, "Noise_type": noise_type, "noise_level": noise_level,
                         "kernel": kernel_name, "train_nll": train_nll_reg, "test_nll": test_nll_reg,
-                        "kendal_tau": tau})
+                        "kendal_tau": tau, "spearman": spearman})
                     experiment_id += 1
 
                 except Exception as e:
@@ -481,7 +498,7 @@ def main():
     try:
         final_columns = [
             'id', 'GP', 'FitnessFn', 'dimension', 'seed', 'Noise_type', 'noise_level', 'kernel',
-            'train_nll', 'test_nll', 'kendal_tau']
+            'train_nll', 'test_nll', 'kendal_tau', 'spearman']
         df2_final = df2.reindex(columns=final_columns)
 
         df2_filepath = os.path.join(output_dir, f"summary_{today_str}_{run_of_day}.csv")
@@ -499,6 +516,60 @@ def main():
         print(f"\nAn error occurred creating the DataFrame: {e}")
 
     print("\n--- CSV Generation Complete ---")
+
+    # --- 6. GENERATE TRAINING LOSS PLOTS ---
+    print("\n--- Generating Training Loss Plots ---")
+
+    # Create plots directory
+    plots_dir = os.path.join(output_dir, "plots")
+    os.makedirs(plots_dir, exist_ok=True)
+
+    # Generate one PDF per fitness function
+    for fn_name in training_losses:
+        kernels = list(training_losses[fn_name].keys())
+        n_kernels = len(kernels)
+
+        # Create figure with 2 columns (ExactGP, PairwiseGP) and n_kernels rows
+        fig, axes = plt.subplots(n_kernels, 2, figsize=(12, 3 * n_kernels))
+
+        # Handle case of single kernel (axes won't be 2D)
+        if n_kernels == 1:
+            axes = axes.reshape(1, -1)
+
+        fig.suptitle(f'Training Loss - {fn_name}', fontsize=14, fontweight='bold')
+
+        for row_idx, kernel_name in enumerate(kernels):
+            kernel_losses = training_losses[fn_name][kernel_name]
+
+            # Column 0: ExactGP
+            if 'ExactGP' in kernel_losses:
+                ax = axes[row_idx, 0]
+                losses_exact = kernel_losses['ExactGP']
+                ax.plot(range(1, len(losses_exact) + 1), losses_exact, 'b-', linewidth=1)
+                ax.set_xlabel('Iteration')
+                ax.set_ylabel('Loss (NLL)')
+                ax.set_title(f'ExactGP - {kernel_name}')
+                ax.grid(True, alpha=0.3)
+
+            # Column 1: PairwiseGP
+            if 'PairwiseGP' in kernel_losses:
+                ax = axes[row_idx, 1]
+                losses_pairwise = kernel_losses['PairwiseGP']
+                ax.plot(range(1, len(losses_pairwise) + 1), losses_pairwise, 'r-', linewidth=1)
+                ax.set_xlabel('Iteration')
+                ax.set_ylabel('Loss (NLL)')
+                ax.set_title(f'PairwiseGP - {kernel_name}')
+                ax.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+
+        # Save as PDF
+        pdf_path = os.path.join(plots_dir, f"training_loss_{fn_name}.pdf")
+        fig.savefig(pdf_path, format='pdf', bbox_inches='tight')
+        plt.close(fig)
+        print(f"  Saved: {pdf_path}")
+
+    print(f"\n--- All plots saved to {plots_dir} ---")
 
 if __name__ == "__main__":
     main()
