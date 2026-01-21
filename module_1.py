@@ -22,9 +22,9 @@ from botorch.models.pairwise_gp import PairwiseLaplaceMarginalLogLikelihood
 from gpytorch.likelihoods import GaussianLikelihood
 
 # Increase default jitter for numerical stability
-linear_operator.settings.cholesky_jitter._global_float_value = 1e-4
-linear_operator.settings.cholesky_jitter._global_double_value = 1e-3
-linear_operator.settings.cholesky_jitter._global_half_value = 1e-2
+# linear_operator.settings.cholesky_jitter._global_float_value = 1e-4
+# linear_operator.settings.cholesky_jitter._global_double_value = 1e-3
+# linear_operator.settings.cholesky_jitter._global_half_value = 1e-2
 
 # Add src to path so we can import modules from it
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
@@ -107,6 +107,8 @@ def main():
             return torch.optim.SGD(parameters, lr=lr)
         elif optimizer_name == 'AdamW':
             return torch.optim.AdamW(parameters, lr=lr)
+        elif optimizer_name == 'LBFGS':
+            return torch.optim.LBFGS(parameters, lr=lr)
         else:
             raise ValueError(f"Unknown optimizer: {optimizer_name}")
 
@@ -146,6 +148,10 @@ def main():
 
     # Store training losses for plotting: {fn_name: {kernel_name: {'ExactGP': [...], 'PairwiseGP': [...]}}}
     training_losses = {}
+
+    # Store prediction data for comprehensive plots
+    # Structure: {fn_name: {kernel_name: {'ExactGP': {...}, 'PairwiseGP': {...}}}}
+    prediction_data = {}
 
     for fn_name in FITNESS_FUNCTIONS:
         print(f"\n======================================")
@@ -266,6 +272,9 @@ def main():
                 # Testing:
                 model_bt.eval() # Eval mode
 
+                # Train NLL is simply the last loss value
+                train_nll_bt = losses[-1]
+
                 with torch.no_grad():
 
                     # Predict on train points
@@ -279,9 +288,6 @@ def main():
                     y_pred_test_bt = posterior_test_bt.mean.squeeze().cpu().numpy()
                     variance_test_bt = posterior_test_bt.variance.squeeze().detach().cpu().numpy()
                     std_test_bt = np.sqrt(variance_test_bt)
-
-                    train_output = model_bt(model_bt.datapoints)
-                    train_nll_bt = -mll_bt(train_output, model_bt.train_targets).item()
 
                 # Compute Proxy Test NLL for PairwiseGP
                 # Create test comparisons from true test labels
@@ -344,6 +350,23 @@ def main():
                     "kernel": kernel_name, "train_nll": train_nll_bt, "test_nll": test_nll_bt,
                     "kendal_tau": tau, "spearman": spearman})
                 experiment_id += 1
+
+                # Store PairwiseGP prediction data for plotting
+                if fn_name not in prediction_data:
+                    prediction_data[fn_name] = {}
+                if kernel_name not in prediction_data[fn_name]:
+                    prediction_data[fn_name][kernel_name] = {}
+                prediction_data[fn_name][kernel_name]['PairwiseGP'] = {
+                    'X_train': X_train.copy(),
+                    'Y_train': Y_train.numpy().copy(),
+                    'X_test': X_test.copy(),
+                    'Y_test': Y_test.numpy().copy(),
+                    'y_pred': y_pred_test_bt.copy(),
+                    'std': std_test_bt.copy(),
+                    'tau': tau,
+                    'spearman': spearman,
+                    'test_nll': test_nll_bt
+                }
 
                 # except Exception as e:  # COMMENTED OUT FOR DEBUGGING - uncomment when done
                 #     print(f"ERROR training {model_name} with {kernel_name}: {e}")
@@ -472,6 +495,19 @@ def main():
                         "kendal_tau": tau, "spearman": spearman})
                     experiment_id += 1
 
+                    # Store ExactGP prediction data for plotting
+                    prediction_data[fn_name][kernel_name]['ExactGP'] = {
+                        'X_train': X_train.copy(),
+                        'Y_train': Y_train.numpy().copy(),
+                        'X_test': X_test.copy(),
+                        'Y_test': Y_test.numpy().copy(),
+                        'y_pred': y_pred_test_reg.copy(),
+                        'std': std_test_reg.copy(),
+                        'tau': tau,
+                        'spearman': spearman,
+                        'test_nll': test_nll_reg
+                    }
+
                 except Exception as e:
                     print(f"ERROR training {model_name} with {kernel_name}: {e}")
                     import traceback
@@ -517,59 +553,176 @@ def main():
 
     print("\n--- CSV Generation Complete ---")
 
-    # --- 6. GENERATE TRAINING LOSS PLOTS ---
-    print("\n--- Generating Training Loss Plots ---")
+    # --- 6. GENERATE COMPREHENSIVE PLOTS (3 rows x 2 columns) ---
+    print("\n--- Generating Comprehensive Plots ---")
 
     # Create plots directory
     plots_dir = os.path.join(output_dir, "plots")
     os.makedirs(plots_dir, exist_ok=True)
 
-    # Generate one PDF per fitness function
-    for fn_name in training_losses:
-        kernels = list(training_losses[fn_name].keys())
-        n_kernels = len(kernels)
+    for fn_name in prediction_data:
+        kernels = list(prediction_data[fn_name].keys())
 
-        # Create figure with 2 columns (ExactGP, PairwiseGP) and n_kernels rows
-        fig, axes = plt.subplots(n_kernels, 2, figsize=(12, 3 * n_kernels))
+        for kernel_name in kernels:
+            kernel_preds = prediction_data[fn_name][kernel_name]
+            kernel_losses = training_losses.get(fn_name, {}).get(kernel_name, {})
 
-        # Handle case of single kernel (axes won't be 2D)
-        if n_kernels == 1:
-            axes = axes.reshape(1, -1)
+            # Check if we have data
+            has_exact = 'ExactGP' in kernel_preds
+            has_pairwise = 'PairwiseGP' in kernel_preds
 
-        fig.suptitle(f'Training Loss - {fn_name}', fontsize=14, fontweight='bold')
+            if not (has_exact or has_pairwise):
+                continue
 
-        for row_idx, kernel_name in enumerate(kernels):
-            kernel_losses = training_losses[fn_name][kernel_name]
+            # Create 3x2 grid:
+            # Row 0: Training Loss
+            # Row 1: Function Fit
+            # Row 2: Monotonicity (True vs Pred)
+            fig, axes = plt.subplots(3, 2, figsize=(14, 12))
+            fig.suptitle(f'{fn_name} - {kernel_name}', fontsize=14, fontweight='bold')
 
-            # Column 0: ExactGP
+            # Get common data
+            ref_gp = 'ExactGP' if has_exact else 'PairwiseGP'
+            X_train = kernel_preds[ref_gp]['X_train']
+            Y_train = kernel_preds[ref_gp]['Y_train']
+            X_test = kernel_preds[ref_gp]['X_test']
+            Y_test = kernel_preds[ref_gp]['Y_test']
+
+            # For 1D case, flatten and sort for proper line plots
+            if D == 1:
+                X_test_flat = X_test.flatten()
+                sort_idx = np.argsort(X_test_flat)
+                X_test_sorted = X_test_flat[sort_idx]
+                Y_test_sorted = Y_test.flatten()[sort_idx]
+                X_train_flat = X_train.flatten()
+                Y_train_flat = Y_train.flatten()
+
+            # ===== ROW 0: Training Loss =====
+            # Column 0: ExactGP Training Loss
+            ax_loss_exact = axes[0, 0]
             if 'ExactGP' in kernel_losses:
-                ax = axes[row_idx, 0]
                 losses_exact = kernel_losses['ExactGP']
-                ax.plot(range(1, len(losses_exact) + 1), losses_exact, 'b-', linewidth=1)
-                ax.set_xlabel('Iteration')
-                ax.set_ylabel('Loss (NLL)')
-                ax.set_title(f'ExactGP - {kernel_name}')
-                ax.grid(True, alpha=0.3)
+                ax_loss_exact.plot(range(1, len(losses_exact) + 1), losses_exact, 'b-', linewidth=1)
+                ax_loss_exact.set_xlabel('Iteration')
+                ax_loss_exact.set_ylabel('Loss (NLL)')
+                ax_loss_exact.set_title(f'ExactGP: Training Loss (LR={EXACT_LR})')
+                ax_loss_exact.grid(True, alpha=0.3)
+            else:
+                ax_loss_exact.text(0.5, 0.5, 'No ExactGP loss data', ha='center', va='center', transform=ax_loss_exact.transAxes)
+                ax_loss_exact.set_title('ExactGP: Training Loss')
 
-            # Column 1: PairwiseGP
+            # Column 1: PairwiseGP Training Loss
+            ax_loss_pairwise = axes[0, 1]
             if 'PairwiseGP' in kernel_losses:
-                ax = axes[row_idx, 1]
                 losses_pairwise = kernel_losses['PairwiseGP']
-                ax.plot(range(1, len(losses_pairwise) + 1), losses_pairwise, 'r-', linewidth=1)
-                ax.set_xlabel('Iteration')
-                ax.set_ylabel('Loss (NLL)')
-                ax.set_title(f'PairwiseGP - {kernel_name}')
-                ax.grid(True, alpha=0.3)
+                ax_loss_pairwise.plot(range(1, len(losses_pairwise) + 1), losses_pairwise, 'g-', linewidth=1)
+                ax_loss_pairwise.set_xlabel('Iteration')
+                ax_loss_pairwise.set_ylabel('Loss (NLL)')
+                ax_loss_pairwise.set_title(f'PairwiseGP: Training Loss (LR={PAIRWISE_LR})')
+                ax_loss_pairwise.grid(True, alpha=0.3)
+            else:
+                ax_loss_pairwise.text(0.5, 0.5, 'No PairwiseGP loss data', ha='center', va='center', transform=ax_loss_pairwise.transAxes)
+                ax_loss_pairwise.set_title('PairwiseGP: Training Loss')
 
-        plt.tight_layout()
+            # ===== ROW 1: Function Fit =====
+            # Column 0: ExactGP Function Fit
+            ax_fit_exact = axes[1, 0]
+            if has_exact and D == 1:
+                exact_data = kernel_preds['ExactGP']
+                y_pred_exact = exact_data['y_pred'].flatten()[sort_idx]
+                std_exact = exact_data['std'].flatten()[sort_idx]
+                lower_exact = y_pred_exact - 2 * std_exact
+                upper_exact = y_pred_exact + 2 * std_exact
 
-        # Save as PDF
-        pdf_path = os.path.join(plots_dir, f"training_loss_{fn_name}.pdf")
-        fig.savefig(pdf_path, format='pdf', bbox_inches='tight')
-        plt.close(fig)
-        print(f"  Saved: {pdf_path}")
+                ax_fit_exact.plot(X_test_sorted, Y_test_sorted, 'k--', label="Ground Truth", linewidth=1.5)
+                ax_fit_exact.plot(X_test_sorted, y_pred_exact, 'b-', label="ExactGP Mean", linewidth=1.5)
+                ax_fit_exact.fill_between(X_test_sorted, lower_exact, upper_exact, color='b', alpha=0.2, label="95% CI")
+                ax_fit_exact.scatter(X_train_flat, Y_train_flat, c='k', marker='x', s=30, label="Train Data", zorder=5)
+                ax_fit_exact.set_xlabel('X')
+                ax_fit_exact.set_ylabel('Y')
+                ax_fit_exact.set_title(f"ExactGP: Function Fit (NLL={exact_data['test_nll']:.2f})")
+                ax_fit_exact.legend(loc='best', fontsize=8)
+                ax_fit_exact.grid(True, alpha=0.3)
+            elif has_exact and D > 1:
+                ax_fit_exact.text(0.5, 0.5, f'ExactGP\n(D={D}, plotting not supported)',
+                        ha='center', va='center', transform=ax_fit_exact.transAxes, fontsize=12)
+                ax_fit_exact.set_title("ExactGP: Function Fit")
+            else:
+                ax_fit_exact.text(0.5, 0.5, 'No ExactGP data', ha='center', va='center', transform=ax_fit_exact.transAxes)
+                ax_fit_exact.set_title("ExactGP: Function Fit")
 
-    print(f"\n--- All plots saved to {plots_dir} ---")
+            # Column 1: PairwiseGP Function Fit
+            ax_fit_pairwise = axes[1, 1]
+            if has_pairwise and D == 1:
+                pairwise_data = kernel_preds['PairwiseGP']
+                y_pred_pairwise = pairwise_data['y_pred'].flatten()[sort_idx]
+                std_pairwise = pairwise_data['std'].flatten()[sort_idx]
+                lower_pairwise = y_pred_pairwise - 2 * std_pairwise
+                upper_pairwise = y_pred_pairwise + 2 * std_pairwise
+
+                ax_fit_pairwise.plot(X_test_sorted, y_pred_pairwise, 'g-', label="PairwiseGP Mean", linewidth=1.5)
+                ax_fit_pairwise.fill_between(X_test_sorted, lower_pairwise, upper_pairwise, color='g', alpha=0.2, label="95% CI")
+                ax_fit_pairwise.set_xlabel('X')
+                ax_fit_pairwise.set_ylabel('Latent Utility')
+                ax_fit_pairwise.set_title(f"PairwiseGP: Function Fit (NLL={pairwise_data['test_nll']:.2f})")
+                ax_fit_pairwise.legend(loc='best', fontsize=8)
+                ax_fit_pairwise.grid(True, alpha=0.3)
+            elif has_pairwise and D > 1:
+                ax_fit_pairwise.text(0.5, 0.5, f'PairwiseGP\n(D={D}, plotting not supported)',
+                        ha='center', va='center', transform=ax_fit_pairwise.transAxes, fontsize=12)
+                ax_fit_pairwise.set_title("PairwiseGP: Function Fit (Latent Scale)")
+            else:
+                ax_fit_pairwise.text(0.5, 0.5, 'No PairwiseGP data', ha='center', va='center', transform=ax_fit_pairwise.transAxes)
+                ax_fit_pairwise.set_title("PairwiseGP: Function Fit")
+
+            # ===== ROW 2: Monotonicity (True vs Predicted) =====
+            # Column 0: ExactGP True vs Predicted
+            ax_mono_exact = axes[2, 0]
+            if has_exact:
+                exact_data = kernel_preds['ExactGP']
+                y_pred_exact_all = exact_data['y_pred'].flatten()
+                std_exact_all = exact_data['std'].flatten()
+                y_true = Y_test.flatten()
+
+                ax_mono_exact.errorbar(y_pred_exact_all, y_true, xerr=2*std_exact_all, fmt='o', color='b', alpha=0.3, markersize=4)
+                # Add ideal fit line
+                lims = [min(ax_mono_exact.get_xlim()[0], ax_mono_exact.get_ylim()[0]),
+                        max(ax_mono_exact.get_xlim()[1], ax_mono_exact.get_ylim()[1])]
+                ax_mono_exact.plot(lims, lims, 'r--', alpha=0.75, label='Ideal Fit')
+                ax_mono_exact.set_xlabel('Predicted Y')
+                ax_mono_exact.set_ylabel('True Y')
+                ax_mono_exact.set_title(f"ExactGP: Monotonicity\nTau={exact_data['tau']:.3f}, Spearman={exact_data['spearman']:.3f}")
+                ax_mono_exact.legend(loc='best', fontsize=8)
+                ax_mono_exact.grid(True, alpha=0.3)
+            else:
+                ax_mono_exact.text(0.5, 0.5, 'No ExactGP data', ha='center', va='center', transform=ax_mono_exact.transAxes)
+                ax_mono_exact.set_title("ExactGP: Monotonicity")
+
+            # Column 1: PairwiseGP True vs Predicted
+            ax_mono_pairwise = axes[2, 1]
+            if has_pairwise:
+                pairwise_data = kernel_preds['PairwiseGP']
+                y_pred_pairwise_all = pairwise_data['y_pred'].flatten()
+                std_pairwise_all = pairwise_data['std'].flatten()
+                y_true = Y_test.flatten()
+
+                ax_mono_pairwise.errorbar(y_pred_pairwise_all, y_true, xerr=2*std_pairwise_all, fmt='o', color='g', alpha=0.3, markersize=4)
+                ax_mono_pairwise.set_xlabel('Predicted Latent Utility')
+                ax_mono_pairwise.set_ylabel('True Y')
+                ax_mono_pairwise.set_title(f"PairwiseGP: Monotonicity\nTau={pairwise_data['tau']:.3f}, Spearman={pairwise_data['spearman']:.3f}")
+                ax_mono_pairwise.grid(True, alpha=0.3)
+            else:
+                ax_mono_pairwise.text(0.5, 0.5, 'No PairwiseGP data', ha='center', va='center', transform=ax_mono_pairwise.transAxes)
+                ax_mono_pairwise.set_title("PairwiseGP: Monotonicity")
+
+            plt.tight_layout()
+
+            # Save as PDF
+            pdf_path = os.path.join(plots_dir, f"{fn_name}_{kernel_name}.pdf")
+            fig.savefig(pdf_path, format='pdf', bbox_inches='tight')
+            plt.close(fig)
+            print(f"  Saved: {pdf_path}")
+
 
 if __name__ == "__main__":
     main()
