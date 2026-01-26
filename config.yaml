@@ -30,21 +30,21 @@ experiment:
     g_std: 1.1
     h_std: 0.1
     amplitude_factor: 0.5
-  nsamples: 30
+  nsamples: 50
   noise: False
   dimension: 1
 
   # PairwiseGP training settings
   pairwise_gp:
-    training_iters: 50
-    lr: 0.0001
-    optimizer: Adam  # Options: Adam, SGD, AdamW
+    training_iters: 15
+    lr: 0.01
+    optimizer: Adam  # Options: Adam, SGD, AdamW, LBFGS
 
   # ExactGP training settings
   exact_gp:
-    training_iters: 1000
+    training_iters: 20
     lr: 0.1
-    optimizer: Adam  # Options: Adam, SGD, AdamW
+    optimizer: Adam  # Options: Adam, SGD, AdamW, LBFGS
   sigmoid:
     k: 2.0
     x0: 5.0
