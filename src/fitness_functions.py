@@ -395,3 +395,6 @@ def fitness_function(base_fn_name: str, dimension: int = 1 ):
       raise ValueError(f"Unknown bayeso_fn_name: {base_fn_name}")
 
   return benchmark
+
+
+# This code has been inspired in the Bayeso benchmark library from (Insert author here)
