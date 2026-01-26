@@ -55,6 +55,16 @@ def main():
     # Load configuration
     parser = argparse.ArgumentParser(description="Run GP Experiment")
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to config file")
+    # Override parameters (if provided, these override config file values)
+    parser.add_argument("--seed", type=int, default=None, help="Random seed (overrides config)")
+    parser.add_argument("--noise_type", type=str, default=None, help="Noise type (overrides config)")
+    parser.add_argument("--pairwise_training_iters", type=int, default=None, help="PairwiseGP training iterations (overrides config)")
+    parser.add_argument("--pairwise_lr", type=float, default=None, help="PairwiseGP learning rate (overrides config)")
+    parser.add_argument("--pairwise_optimizer", type=str, default=None, help="PairwiseGP optimizer (overrides config)")
+    parser.add_argument("--exact_training_iters", type=int, default=None, help="ExactGP training iterations (overrides config)")
+    parser.add_argument("--exact_lr", type=float, default=None, help="ExactGP learning rate (overrides config)")
+    parser.add_argument("--exact_optimizer", type=str, default=None, help="ExactGP optimizer (overrides config)")
+    parser.add_argument("--clear_aggregate", action="store_true", help="Clear existing aggregate summary before running")
     args = parser.parse_args()
 
     config_path = args.config
@@ -70,34 +80,38 @@ def main():
     
     exp_config = config['experiment']
 
-    SEED = exp_config['seed']
+    # Load from config, then override with command-line arguments if provided
+    SEED = args.seed if args.seed is not None else exp_config['seed']
     random.seed(SEED)
     np.random.seed(SEED)
     torch.manual_seed(SEED)
-    
+
     # Detect device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     FITNESS_FUNCTIONS = exp_config['fitness_functions']
     NOISE_TYPES = exp_config['noise_types']
+    # Override noise_types if provided via command line
+    if args.noise_type is not None:
+        NOISE_TYPES = [args.noise_type]
     KERNEL_NAMES = exp_config['kernel_names']
     params = exp_config['noise_params']
-    
+
     # Data and Training constants
     NSAMPLES = exp_config['nsamples']
     NOISE = exp_config['noise']
     D = exp_config['dimension']
 
-    # PairwiseGP settings
-    PAIRWISE_TRAINING_ITERS = exp_config['pairwise_gp']['training_iters']
-    PAIRWISE_LR = exp_config['pairwise_gp']['lr']
-    PAIRWISE_OPTIMIZER = exp_config['pairwise_gp']['optimizer']
+    # PairwiseGP settings (with command-line overrides)
+    PAIRWISE_TRAINING_ITERS = args.pairwise_training_iters if args.pairwise_training_iters is not None else exp_config['pairwise_gp']['training_iters']
+    PAIRWISE_LR = args.pairwise_lr if args.pairwise_lr is not None else exp_config['pairwise_gp']['lr']
+    PAIRWISE_OPTIMIZER = args.pairwise_optimizer if args.pairwise_optimizer is not None else exp_config['pairwise_gp']['optimizer']
 
-    # ExactGP settings
-    EXACT_TRAINING_ITERS = exp_config['exact_gp']['training_iters']
-    EXACT_LR = exp_config['exact_gp']['lr']
-    EXACT_OPTIMIZER = exp_config['exact_gp']['optimizer']
+    # ExactGP settings (with command-line overrides)
+    EXACT_TRAINING_ITERS = args.exact_training_iters if args.exact_training_iters is not None else exp_config['exact_gp']['training_iters']
+    EXACT_LR = args.exact_lr if args.exact_lr is not None else exp_config['exact_gp']['lr']
+    EXACT_OPTIMIZER = args.exact_optimizer if args.exact_optimizer is not None else exp_config['exact_gp']['optimizer']
 
     # Helper function to get optimizer
     def get_optimizer(optimizer_name, parameters, lr):
@@ -145,6 +159,9 @@ def main():
 
     metadata_list = []
     experiment_id = 0
+
+    # Store all prediction DataFrames for merging into single CSV
+    all_predictions_list = []
 
     # Store training losses for plotting: {fn_name: {kernel_name: {'ExactGP': [...], 'PairwiseGP': [...]}}}
     training_losses = {}
@@ -335,9 +352,9 @@ def main():
                 df1_test['lengthscale'] = ls_bt
                 df1 = pd.concat([df1_train, df1_test]).reset_index(drop=True)
 
-                df1_filename = f"{model_name}_{fn_name}_{D}D_{noise_type}_{kernel_name}.csv"
-                df1_filepath = os.path.join(output_dir, df1_filename)
-                df1.to_csv(df1_filepath, index=False)
+                df1_filename = f"{model_name}_{fn_name}_{D}D_{noise_type}_{kernel_name}"
+                df1['experiment_name'] = df1_filename
+                all_predictions_list.append(df1.copy())
 
                 # --- Calculate metrics for df2 ---
                 df1_test_only = df1[df1['fold'] == 1]
@@ -479,9 +496,9 @@ def main():
 
                     df1 = pd.concat([df1_train, df1_test]).reset_index(drop=True)
 
-                    df1_filename = f"{model_name}_{fn_name}_{D}D_{noise_type}_{kernel_name}.csv"
-                    df1_filepath = os.path.join(output_dir, df1_filename)
-                    df1.to_csv(df1_filepath, index=False)
+                    df1_filename = f"{model_name}_{fn_name}_{D}D_{noise_type}_{kernel_name}"
+                    df1['experiment_name'] = df1_filename
+                    all_predictions_list.append(df1.copy())
 
                     # --- Calculate metrics for df2 ---
                     df1_test_only = df1[df1['fold'] == 1]
@@ -526,7 +543,18 @@ def main():
                 if 'train_output' in locals(): del train_output
                 if torch.cuda.is_available(): torch.cuda.empty_cache()
 
-    # --- 5. FINAL METADATA DATAFRAME (df2) ---
+    # --- 5. SAVE MERGED PREDICTIONS CSV ---
+    print("\n--- Saving Merged Predictions ---")
+    if all_predictions_list:
+        df_all_predictions = pd.concat(all_predictions_list, ignore_index=True)
+        # Reorder columns to have experiment_name first
+        cols = ['experiment_name'] + [c for c in df_all_predictions.columns if c != 'experiment_name']
+        df_all_predictions = df_all_predictions[cols]
+        predictions_filepath = os.path.join(output_dir, f"predictions_{today_str}_{run_of_day}.csv")
+        df_all_predictions.to_csv(predictions_filepath, index=False)
+        print(f"Merged predictions saved to {predictions_filepath}")
+
+    # --- 6. FINAL METADATA DATAFRAME (df2) ---
     print("\n--- Experiment Complete ---")
     df2 = pd.DataFrame(metadata_list)
 
@@ -553,7 +581,42 @@ def main():
 
     print("\n--- CSV Generation Complete ---")
 
-    # --- 6. GENERATE COMPREHENSIVE PLOTS (3 rows x 2 columns) ---
+    # --- 7. AGGREGATE MULTI-SEED SUMMARY ---
+    # Check for existing summary files from runs with same config but different seeds
+    aggregate_summary_path = os.path.join(base_dir, "aggregate_summary.csv")
+
+    # Clear aggregate if requested
+    if args.clear_aggregate and os.path.exists(aggregate_summary_path):
+        os.remove(aggregate_summary_path)
+        print("Cleared existing aggregate summary.")
+
+    if os.path.exists(aggregate_summary_path):
+        existing_aggregate = pd.read_csv(aggregate_summary_path)
+        # Append current results
+        updated_aggregate = pd.concat([existing_aggregate, df2_final], ignore_index=True)
+    else:
+        updated_aggregate = df2_final.copy()
+
+    updated_aggregate.to_csv(aggregate_summary_path, index=False)
+    print(f"Aggregate summary (across seeds) saved to {aggregate_summary_path}")
+
+    # Generate per-experiment statistics (mean, std across seeds)
+    if len(updated_aggregate['seed'].unique()) > 1:
+        group_cols = ['GP', 'FitnessFn', 'dimension', 'Noise_type', 'noise_level', 'kernel']
+        metric_cols = ['train_nll', 'test_nll', 'kendal_tau', 'spearman']
+
+        agg_stats = updated_aggregate.groupby(group_cols)[metric_cols].agg(['mean', 'std']).reset_index()
+        # Flatten column names
+        agg_stats.columns = [f"{col[0]}_{col[1]}" if col[1] else col[0] for col in agg_stats.columns]
+        agg_stats['n_seeds'] = updated_aggregate.groupby(group_cols)['seed'].nunique().values
+
+        stats_filepath = os.path.join(base_dir, "aggregate_stats.csv")
+        agg_stats.to_csv(stats_filepath, index=False)
+        print(f"Aggregate statistics saved to {stats_filepath}")
+        print("\n--- Aggregate Statistics (across seeds) ---")
+        print(agg_stats)
+
+    # --- 9. GENERATE COMPREHENSIVE PLOTS (3 rows x 2 columns) ---
     print("\n--- Generating Comprehensive Plots ---")
 
     # Create plots directory
