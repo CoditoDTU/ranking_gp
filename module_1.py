@@ -20,6 +20,8 @@ from matplotlib.backends.backend_pdf import PdfPages
 from botorch.models import PairwiseGP
 from botorch.models.pairwise_gp import PairwiseLaplaceMarginalLogLikelihood
 from gpytorch.likelihoods import GaussianLikelihood
+from botorch.optim.utils import get_parameters
+from botorch.optim.closures import get_loss_closure_with_grads
 
 # Increase default jitter for numerical stability
 # linear_operator.settings.cholesky_jitter._global_float_value = 1e-4
@@ -33,6 +35,8 @@ from fitness_functions import *
 from models import FlexibleExactGPModel, build_kernel
 from noise import add_noise
 from datatools import get_comparisons, apply_sigmoid
+
+from src.solvers import get_optimizer
 
 class Logger(object):
     def __init__(self, filename):
@@ -112,19 +116,6 @@ def main():
     EXACT_TRAINING_ITERS = args.exact_training_iters if args.exact_training_iters is not None else exp_config['exact_gp']['training_iters']
     EXACT_LR = args.exact_lr if args.exact_lr is not None else exp_config['exact_gp']['lr']
     EXACT_OPTIMIZER = args.exact_optimizer if args.exact_optimizer is not None else exp_config['exact_gp']['optimizer']
-
-    # Helper function to get optimizer
-    def get_optimizer(optimizer_name, parameters, lr):
-        if optimizer_name == 'Adam':
-            return torch.optim.Adam(parameters, lr=lr)
-        elif optimizer_name == 'SGD':
-            return torch.optim.SGD(parameters, lr=lr)
-        elif optimizer_name == 'AdamW':
-            return torch.optim.AdamW(parameters, lr=lr)
-        elif optimizer_name == 'LBFGS':
-            return torch.optim.LBFGS(parameters, lr=lr)
-        else:
-            raise ValueError(f"Unknown optimizer: {optimizer_name}")
 
     # Define fixed sigmoid parameters
     SIGMOID_K = exp_config['sigmoid']['k']
@@ -250,26 +241,34 @@ def main():
 
                 kernel_bt = build_kernel(kernel_name, D) # KERNEL
                 model_bt = PairwiseGP(X_train_pairwise, comparisons, covar_module=kernel_bt, consolidate_atol=0.0)# GP
-                mll_bt = PairwiseLaplaceMarginalLogLikelihood(model_bt.likelihood,model= model_bt) # MARGINAL Log likelihood
+                mll_bt = PairwiseLaplaceMarginalLogLikelihood(model_bt.likelihood,model=model_bt) # MARGINAL Log likelihood
+
                 optimizer_bt = get_optimizer(PAIRWISE_OPTIMIZER, model_bt.parameters(), PAIRWISE_LR) # Optimizer
                 
-
                 # Send to device
                 model_bt.to(device)
                 mll_bt.to(device)
-
-                # Training:
+                # Set Training:
                 model_bt.train()
                 losses = []
 
                 for i in range(PAIRWISE_TRAINING_ITERS):
 
-                    optimizer_bt.zero_grad() # zero grads
-                    output = model_bt(model_bt.datapoints) # forward
-                    loss = -mll_bt(output, model_bt.train_targets) # Loss calc
-                    loss.backward() # Backprop
-
-                    optimizer_bt.step() # Optimizer step
+                    if "bfgs" in PAIRWISE_OPTIMIZER.lower():
+                        def closure():
+                            optimizer_bt.zero_grad(set_to_none=True)
+                            output = model_bt(model_bt.datapoints)
+                            loss = -mll_bt(output, model_bt.train_targets)
+                            loss.backward()
+                            return loss  # <-- must be a scalar Tensor, NOT a tuple
+                        
+                        loss = optimizer_bt.step(closure)
+                    else:  # DEFAULT: not in a closure
+                        optimizer_bt.zero_grad() # zero grads
+                        output = model_bt(model_bt.datapoints) # forward
+                        loss = -mll_bt(output, model_bt.train_targets) # Loss calc
+                        loss.backward() # Backprop
+                        optimizer_bt.step() # default Optimizer step
                     losses.append(loss.item())
 
                     if (i+1) % 20 == 0:
@@ -428,11 +427,23 @@ def main():
                     losses = []
 
                     for i in range(EXACT_TRAINING_ITERS):
-                        optimizer_reg.zero_grad()
-                        output = model_reg(X_train_reg)
-                        loss = -mll_reg(output, Y_train_reg).sum()
-                        loss.backward()
-                        optimizer_reg.step()
+
+                        if "bfgs" in EXACT_OPTIMIZER.lower():
+                            def closure():
+                                optimizer_reg.zero_grad(set_to_none=True)
+                                output = model_reg(X_train_reg)
+                                loss = -mll_reg(output, Y_train_reg).sum()
+                                loss.backward()
+                                return loss  # <-- must be a scalar Tensor, NOT a tuple
+                        
+                            loss = optimizer_reg.step(closure)
+                            optimizer_reg.step(closure)   
+                        else: 
+                            optimizer_reg.zero_grad()
+                            output = model_reg(X_train_reg)
+                            loss = -mll_reg(output, Y_train_reg).sum()
+                            loss.backward()
+                            optimizer_reg.step()
                         losses.append(loss.item())
 
                         if (i+1) % 20 == 0:
