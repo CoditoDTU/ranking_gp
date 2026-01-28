@@ -1,1 +1,1 @@
-from solvers.get_solvers import get_optimizer
+from .get_solvers import get_optimizer
