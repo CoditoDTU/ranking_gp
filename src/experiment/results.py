@@ -4,10 +4,11 @@ Extracted from module_1.py lines 341-367, 495-524, 557-627.
 """
 import os
 import json
+import yaml
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 
 
 @dataclass
@@ -136,6 +137,15 @@ class ResultsCollector:
     # ------------------------------------------------------------------
     # Saving
     # ------------------------------------------------------------------
+
+    def save_config(self, config) -> str:
+        """Save the resolved experiment configuration as YAML for reproducibility."""
+        filepath = os.path.join(self.output_dir, f"config_{self.experiment_id}.yaml")
+        config_dict = asdict(config)
+        with open(filepath, 'w') as f:
+            yaml.dump({'experiment': config_dict}, f, default_flow_style=False, sort_keys=False)
+        print(f"Experiment config saved to {filepath}")
+        return filepath
 
     def save_losses(self) -> str:
         """Save training losses to JSON so they can be loaded independently."""
