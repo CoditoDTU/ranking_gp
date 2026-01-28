@@ -1,5 +1,5 @@
 .vscode/
-src/__pycache__/
+__pycache__/
 
 experiments/
 
@@ -7,3 +7,4 @@ experiments/
 .DS_Store
 
 sandbox.ipynb
+REFACTORING_PLAN.md
