@@ -89,6 +89,7 @@ All CLI flags for `run_experiments.py`:
 | `--exact_optimizer` | ExactGP optimizer (Adam, SGD, AdamW, LBFGS) |
 | `--clear_aggregate` | Clear existing aggregate summary before running |
 | `--no-plot` | Skip plot generation after experiments |
+| `--quiet`, `-q` | Suppress terminal output (log to file only) |
 
 ### Re-plotting from Saved Results
 
@@ -121,6 +122,7 @@ experiment:
     - matern_3_2
     - exponential
   nsamples: 50
+  n_test_points: 100
   noise: False
   dimension: 1
 
@@ -142,6 +144,7 @@ All results are saved in the `experiments/` directory.
 ```text
 experiments/
 ├── experiments_DDMMYY_ID/
+│   ├── config_DDMMYY_ID.yaml       # Resolved config (for reproducibility)
 │   ├── summary_DDMMYY_ID.csv       # Metrics summary (NLL, Kendall tau, Spearman)
 │   ├── predictions_DDMMYY_ID.csv   # Merged predictions for all models
 │   ├── losses_DDMMYY_ID.json       # Training losses (for independent re-plotting)
@@ -155,6 +158,7 @@ experiments/
 
 ### Output Files
 
+- **Config YAML** (`config_*.yaml`): Snapshot of the resolved configuration (including CLI overrides) for full reproducibility.
 - **Summary CSV** (`summary_*.csv`): Metrics for every model trained in the run (GP type, fitness function, kernel, NLL, Kendall's tau, Spearman).
 - **Predictions CSV** (`predictions_*.csv`): Train/test data, predictions, variances, and lengthscales for all models.
 - **Losses JSON** (`losses_*.json`): Per-iteration training losses, enabling `run_visualization.py` to re-plot loss curves independently.
