@@ -6,17 +6,33 @@ This repository contains a framework for running Gaussian Process (GP) inference
 
 ```text
 ranking_gp/
-├── config.yaml              # Configuration file for experiment parameters
-├── environment.yaml         # Conda environment definition
-├── module_1.py              # Main training and inference script
-├── plot_1d_exactgp.py       # Plotting script for 1D ExactGP fits
-├── run_experiment.sh        # Pipeline script to run training and plotting sequentially
-├── ytrue_vs_ypred.py        # Plotting script for Ground Truth vs Prediction grids
-├── src/                     # Source code for models and utilities
-│   ├── datatools.py         # Helper functions
-│   ├── fitness_functions.py # Benchmark functions
-│   ├── models.py            # GP Model definitions
-│   └── noise.py             # Noise generation logic
+├── run_experiments.py           # Main experiment runner
+├── run_visualization.py         # Standalone visualization (re-plot from saved data)
+├── config.yaml                  # Configuration file for experiment parameters
+├── environment.yaml             # Conda environment definition
+├── module_1.py                  # Legacy monolithic script (deprecated)
+├── src/
+│   ├── config/
+│   │   ├── experiment_config.py # ExperimentConfig dataclass, config loading
+│   │   └── cli.py               # Argument parsers for both scripts
+│   ├── experiment/
+│   │   ├── logger.py            # Logger (tees stdout to log file)
+│   │   ├── manager.py           # ExperimentManager (directories, run IDs)
+│   │   └── results.py           # ResultsCollector, TrainingResult dataclass
+│   ├── trainers/
+│   │   ├── base.py              # BaseTrainer abstract class
+│   │   ├── pairwise_gp.py      # PairwiseGPTrainer
+│   │   └── exact_gp.py         # ExactGPTrainer
+│   ├── visualization/
+│   │   └── experiment_plots.py  # 3x2 grid plots (loss, fit, monotonicity)
+│   ├── models.py                # GP model definitions (gpytorch / botorch)
+│   ├── fitness_functions.py     # Benchmark test functions
+│   ├── datatools.py             # Pairwise comparison utilities
+│   ├── noise.py                 # Noise generation
+│   └── solvers/
+│       └── get_solvers.py       # Optimizer factory (Adam, SGD, AdamW, LBFGS)
+└── unittest/
+    └── test_fitness_functions.py
 ```
 
 ## Installation
@@ -28,7 +44,6 @@ ranking_gp/
     ```
 
 2.  **Create the Conda environment:**
-    This project uses a `environment.yaml` file to manage dependencies (PyTorch, GPyTorch, BoTorch, etc.).
     ```bash
     conda env create -f environment.yaml
     ```
@@ -40,67 +55,108 @@ ranking_gp/
 
 ## Usage
 
-### Running the Full Pipeline
-The easiest way to run an experiment and generate plots is using the shell script:
+### Running Experiments
 
 ```bash
-chmod +x run_experiment.sh
-./run_experiment.sh
+# Run with default config
+python run_experiments.py
+
+# Run with a specific config file
+python run_experiments.py --config config.yaml
+
+# Override seed and noise type
+python run_experiments.py --seed 42 --noise_type gaussian
+
+# Run without generating plots (results are still saved)
+python run_experiments.py --no-plot
+
+# Clear the aggregate summary before running
+python run_experiments.py --clear_aggregate
 ```
 
-This script will:
-1.  Run `module_1.py` to train the gps based on `config.yaml`.
-2.  Automatically detect the generated experiment ID.
-3.  Run `ytrue_vs_ypred.py` to generate prediction vs. ground truth plots.
-4.  Run `plot_1d_exactgp.py` (if dimension is 1) to visualize the fit.
+All CLI flags for `run_experiments.py`:
 
-### Running Scripts Individually
+| Flag | Description |
+|---|---|
+| `--config` | Path to config YAML (default: `config.yaml`) |
+| `--seed` | Random seed (overrides config) |
+| `--noise_type` | Noise type (overrides config) |
+| `--pairwise_training_iters` | PairwiseGP training iterations |
+| `--pairwise_lr` | PairwiseGP learning rate |
+| `--pairwise_optimizer` | PairwiseGP optimizer (Adam, SGD, AdamW, LBFGS) |
+| `--exact_training_iters` | ExactGP training iterations |
+| `--exact_lr` | ExactGP learning rate |
+| `--exact_optimizer` | ExactGP optimizer (Adam, SGD, AdamW, LBFGS) |
+| `--clear_aggregate` | Clear existing aggregate summary before running |
+| `--no-plot` | Skip plot generation after experiments |
 
-**1. Training (`module_1.py`)**
-Runs the experiment. Results are saved in `experiments/experiments_DATE_ID/`.
-```bash
-python module_1.py --config config.yaml
-```
+### Re-plotting from Saved Results
 
-**2. Plotting (`ytrue_vs_ypred.py`)**
-Generates "Ground Truth vs Prediction" grid plots.
+`run_visualization.py` regenerates plots from previously saved experiment data, without re-running experiments:
+
 ```bash
 # Plot the latest experiment
-python ytrue_vs_ypred.py
+python run_visualization.py
 
-# Plot a specific experiment ID
-python ytrue_vs_ypred.py --id 181225_0
+# Plot a specific experiment by ID
+python run_visualization.py --id 270126_0
 ```
 
 ## Configuration
-Modify `config.yaml` to change experiment parameters such as `fitness_functions`, `dimension`, `noise`, `kernel_names`, and `training_iters`.
+
+Modify `config.yaml` to change experiment parameters:
+
+```yaml
+experiment:
+  seed: 42
+  fitness_functions:
+    - ackley
+    - gramacy_and_lee
+    - cosines
+    - levy
+    - sphere
+  kernel_names:
+    - squared_exponential
+    - matern_5_2
+    - matern_3_2
+    - exponential
+  nsamples: 50
+  noise: False
+  dimension: 1
+
+  pairwise_gp:
+    training_iters: 1500
+    lr: 0.01
+    optimizer: Adam      # Options: Adam, SGD, AdamW, LBFGS
+
+  exact_gp:
+    training_iters: 500
+    lr: 0.1
+    optimizer: Adam
+```
 
 ## Experiment Outputs
 
 All results are saved in the `experiments/` directory.
 
-### Folder Structure
 ```text
 experiments/
-└── experiments_DDMMYY_ID/                    # e.g., experiments_181225_0
-    ├── summary_DDMMYY_ID.csv                 # Metrics summary
-    ├── PairwiseGP_ackley_1D_none_matern_5_2.csv
-    └── plots/                                # Generated visualizations
-        ├── ackley_1D_grid_ytrue_vs_y_pred.pdf
-        └── ackley_1D_ExactGP_fit.pdf
+├── experiments_DDMMYY_ID/
+│   ├── summary_DDMMYY_ID.csv       # Metrics summary (NLL, Kendall tau, Spearman)
+│   ├── predictions_DDMMYY_ID.csv   # Merged predictions for all models
+│   ├── losses_DDMMYY_ID.json       # Training losses (for independent re-plotting)
+│   ├── log_DDMMYY_ID.txt           # Stdout log
+│   └── plots/                      # Generated PDF visualizations
+│       ├── ackley_squared_exponential.pdf
+│       └── ...
+├── aggregate_summary.csv            # Results across all seeds/runs
+└── aggregate_stats.csv              # Mean/std statistics across seeds
 ```
 
-### Folder Contents
-Inside an experiment folder, you will find:
+### Output Files
 
-1.  **Summary File (`summary_DDMMYY_ID.csv`)**:
-    Contains metadata and metrics (NLL, Kendall's Tau) for every model trained in this batch.
-
-2.  **Model Predictions (`.csv`)**:
-    Individual CSV files for each model configuration containing training data, test data, and predictions.
-    Naming convention: `{Model}_{Function}_{Dim}D_{Noise}_{Kernel}.csv`
-    Example: `PairwiseGP_ackley_1D_none_matern_5_2.csv`
-
-3.  **Plots (`plots/`)**:
-    Generated by the plotting scripts (`ytrue_vs_ypred.py`, `plot_1d_exactgp.py`).
-    Contains PDF/PNG visualizations of the results.
+- **Summary CSV** (`summary_*.csv`): Metrics for every model trained in the run (GP type, fitness function, kernel, NLL, Kendall's tau, Spearman).
+- **Predictions CSV** (`predictions_*.csv`): Train/test data, predictions, variances, and lengthscales for all models.
+- **Losses JSON** (`losses_*.json`): Per-iteration training losses, enabling `run_visualization.py` to re-plot loss curves independently.
+- **Plots** (`plots/`): 3x2 PDF grids per function/kernel showing training loss, function fit (1D), and monotonicity for both ExactGP and PairwiseGP.
+- **Aggregate files**: `aggregate_summary.csv` accumulates results across seeds; `aggregate_stats.csv` reports mean/std when multiple seeds exist.
