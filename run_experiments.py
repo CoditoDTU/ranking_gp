@@ -12,14 +12,16 @@ Usage:
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
+import time
 import warnings
 import random
 import torch
 import numpy as np
 from scipy.stats import kendalltau, spearmanr
+from tqdm import tqdm
 
 from src.config import create_experiment_parser, create_experiment_config
-from src.experiment import ExperimentManager, ResultsCollector, TrainingResult
+from src.experiment import ExperimentManager, ResultsCollector, TrainingResult, ProgressTracker
 from src.trainers import PairwiseGPTrainer, ExactGPTrainer
 from src.fitness_functions import fitness_function
 from src.datatools import get_comparisons
@@ -44,20 +46,34 @@ def main():
     print(f"Using device: {device}")
 
     # --- Setup experiment directory and logging ---
-    exp_manager = ExperimentManager()
+    exp_manager = ExperimentManager(quiet=args.quiet)
     output_dir = exp_manager.setup()
     results = ResultsCollector(output_dir, exp_manager.experiment_id)
 
+    # Save config at start for reproducibility
+    results.save_config(config)
+
+    # --- Setup progress tracking ---
+    noise_types_list = ['none'] if not config.noise else config.noise_types
+    total_experiments = (
+        len(config.fitness_functions) *
+        len(noise_types_list) *
+        len(config.kernel_names) *
+        2  # PairwiseGP + ExactGP
+    )
+    progress = ProgressTracker(total=total_experiments, quiet=args.quiet)
+    progress.start()
+
     # --- Main experiment loop ---
     for fn_name in config.fitness_functions:
-        print(f"\n======================================")
-        print(f"Testing Fitness Function: {fn_name}")
-        print(f"======================================")
+        progress.write(f"\n{'='*40}")
+        progress.write(f"Fitness Function: {fn_name}")
+        progress.write(f"{'='*40}")
 
         fitness_fn = fitness_function(base_fn_name=fn_name, dimension=config.dimension)
 
         # Generate common test data
-        total_test_points = 100
+        total_test_points = config.n_test_points
         grid_points_per_dim = int(total_test_points ** (1 / config.dimension))
         X_test = fitness_fn.sample_grids(grid_points_per_dim)
         X_test_tensor = torch.tensor(X_test, dtype=torch.float64)
@@ -74,13 +90,11 @@ def main():
 
             if not config.noise:
                 comparisons, X_train_pairwise = get_comparisons(Y_train, X=X_train_tensor)
-                print(f"\n--- No Noise ---")
                 noise_level = 0.0
                 noise_type = 'none'
                 Y_noisy = None
             else:
                 noise_level = config.noise_params.g_std
-                print(f"\n--- Noise Type: {noise_type} ---")
                 Y_noisy = add_noise(
                     Y_train, noise_type='gaussian',
                     noise_params={'g_std': config.noise_params.g_std,
@@ -90,8 +104,6 @@ def main():
                 comparisons, X_train_pairwise = get_comparisons(Y_noisy, X=X_train_tensor)
 
             for kernel_name in config.kernel_names:
-                print(f"\n----- Kernel: {kernel_name} -----")
-
                 # Build data dicts for results storage
                 if not config.noise:
                     df_train_data = {
@@ -119,6 +131,7 @@ def main():
                     }
 
                 # ========== PairwiseGP ==========
+                progress.set_status(f"{fn_name}/{kernel_name}/PairwiseGP")
                 _train_and_record(
                     PairwiseGPTrainer, config.pairwise_gp, kernel_name, config.dimension,
                     device, X_train_tensor, Y_train, X_test_tensor, Y_test,
@@ -126,8 +139,10 @@ def main():
                     fn_name, noise_type, noise_level, config.seed,
                     results, df_train_data, df_test_data,
                 )
+                progress.update()
 
                 # ========== ExactGP ==========
+                progress.set_status(f"{fn_name}/{kernel_name}/ExactGP")
                 Y_train_exact = Y_noisy if config.noise else Y_train
                 _train_and_record(
                     ExactGPTrainer, config.exact_gp, kernel_name, config.dimension,
@@ -136,6 +151,9 @@ def main():
                     fn_name, noise_type, noise_level, config.seed,
                     results, df_train_data, df_test_data,
                 )
+                progress.update()
+
+    progress.finish()
 
     # --- Save results ---
     print("\n--- Saving Merged Predictions ---")
@@ -163,7 +181,13 @@ def main():
     else:
         print("\n--- Skipping plot generation (--no-plot) ---")
 
-    print("\n--- Experiment Complete ---")
+    print(f"\n--- Experiment Complete (elapsed: {progress.elapsed_str}) ---")
+
+    # Print completion message to terminal (even in quiet mode)
+    if args.quiet:
+        import sys
+        sys.stdout = sys.stdout.terminal  # Restore terminal output
+        print(f"Experiment {exp_manager.experiment_id} complete in {progress.elapsed_str}. Results in: {output_dir}")
 
 
 def _train_and_record(
