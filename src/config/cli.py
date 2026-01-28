@@ -30,6 +30,8 @@ def create_experiment_parser() -> argparse.ArgumentParser:
                         help="Clear existing aggregate summary before running")
     parser.add_argument("--no-plot", action="store_true",
                         help="Skip plot generation after experiments")
+    parser.add_argument("--quiet", "-q", action="store_true",
+                        help="Suppress terminal output (log to file only)")
     return parser
 
 

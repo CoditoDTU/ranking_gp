@@ -3,18 +3,18 @@ Experiment directory and metadata management.
 Extracted from module_1.py lines 124-158.
 """
 import os
-import sys
 import glob
 import datetime
 
-from .logger import Logger
+from .logger import setup_logging
 
 
 class ExperimentManager:
     """Manages experiment directories, logging, and run IDs."""
 
-    def __init__(self, base_dir: str = "experiments"):
+    def __init__(self, base_dir: str = "experiments", quiet: bool = False):
         self.base_dir = base_dir
+        self.quiet = quiet
         self.output_dir = None
         self.today_str = None
         self.run_of_day = None
@@ -45,13 +45,12 @@ class ExperimentManager:
         self.output_dir = os.path.join(self.base_dir, f"experiments_{self.today_str}_{self.run_of_day}")
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # Setup logging (tee stdout to file)
+        # Setup logging (redirect stdout/stderr to file)
         log_path = os.path.join(
             self.output_dir,
             f"experiment_{self.today_str}_{self.run_of_day}_log.txt",
         )
-        self._logger = Logger(log_path)
-        sys.stdout = self._logger
+        self._logger = setup_logging(log_path, quiet=self.quiet)
 
         # Save experiment ID for shell scripts (e.g., run_experiment.sh)
         with open(".last_experiment_id", "w") as f:

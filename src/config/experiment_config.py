@@ -41,6 +41,7 @@ class ExperimentConfig:
     gp_types: List[str]
     noise_params: NoiseParams
     nsamples: int
+    n_test_points: int
     noise: bool
     dimension: int
     pairwise_gp: GPSettings
@@ -98,6 +99,7 @@ def create_experiment_config(config_path: str, cli_overrides: Dict[str, Any] = N
         gp_types=exp.get('gp_types', ['PairwiseGP', 'ExactGP']),
         noise_params=NoiseParams(**exp['noise_params']),
         nsamples=exp['nsamples'],
+        n_test_points=exp.get('n_test_points', 100),
         noise=exp['noise'],
         dimension=exp['dimension'],
         pairwise_gp=GPSettings(
