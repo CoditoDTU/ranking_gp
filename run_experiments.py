@@ -72,36 +72,45 @@ def main():
 
         fitness_fn = fitness_function(base_fn_name=fn_name, dimension=config.dimension)
 
-        # Generate common test data
-        total_test_points = config.n_test_points
-        grid_points_per_dim = int(total_test_points ** (1 / config.dimension))
-        X_test = fitness_fn.sample_grids(grid_points_per_dim)
+        # Generate all data per fitness function: sample N points and get true labels
+        n_total = config.nsamples + config.n_test_points
+        X_all = fitness_fn.sample_uniform(n_total, seed=config.seed)
+        Y_all_true = torch.Tensor(fitness_fn.output(X_all))
+
+        # Split into training and testing
+        X_train = X_all[:config.nsamples]
+        X_test = X_all[config.nsamples:]
+        X_train_tensor = torch.tensor(X_train, dtype=torch.float64)
         X_test_tensor = torch.tensor(X_test, dtype=torch.float64)
-        Y_test = torch.Tensor(fitness_fn.output(X_test))
+
+        Y_train = Y_all_true[:config.nsamples]
+        Y_test_true = Y_all_true[config.nsamples:]
 
         noise_iterator = ['none'] if not config.noise else config.noise_types
 
         for noise_type in noise_iterator:
-
-            # Generate training data
-            X_train = fitness_fn.sample_uniform(config.nsamples, seed=config.seed)
-            X_train_tensor = torch.tensor(X_train, dtype=torch.float64)
-            Y_train = torch.Tensor(fitness_fn.output(X_train))
 
             if not config.noise:
                 comparisons, X_train_pairwise = get_comparisons(Y_train, X=X_train_tensor)
                 noise_level = 0.0
                 noise_type = 'none'
                 Y_noisy = None
+                Y_test = Y_test_true
             else:
+                # Noise all labels, then subset into train/test
                 noise_level = config.noise_params.g_std
-                Y_noisy = add_noise(
-                    Y_train, noise_type='gaussian',
+                Y_all_noisy = add_noise(
+                    Y_all_true, noise_type=noise_type,
                     noise_params={'g_std': config.noise_params.g_std,
                                   'h_std': config.noise_params.h_std,
                                   'amplitude_factor': config.noise_params.amplitude_factor},
                 )
-                comparisons, X_train_pairwise = get_comparisons(Y_noisy, X=X_train_tensor)
+                Y_noisy_train = Y_all_noisy[:config.nsamples]
+                Y_noisy_test = Y_all_noisy[config.nsamples:]
+
+                Y_noisy = Y_noisy_train
+                Y_test = Y_noisy_test
+                comparisons, X_train_pairwise = get_comparisons(Y_noisy_train, X=X_train_tensor)
 
             for kernel_name in config.kernel_names:
                 # Build data dicts for results storage
@@ -114,20 +123,20 @@ def main():
                     df_test_data = {
                         'fold': 1,
                         'X': X_test.flatten() if config.dimension == 1 else X_test.tolist(),
-                        'y_true': Y_test.flatten().numpy(),
+                        'y_true': Y_test_true.flatten().numpy(),
                     }
                 else:
                     df_train_data = {
                         'fold': 0,
                         'X': X_train.flatten() if config.dimension == 1 else X_train.tolist(),
                         'y_true': Y_train.flatten().numpy(),
-                        'y_noisy': Y_noisy.flatten().numpy(),
+                        'y_noisy': Y_noisy_train.flatten().numpy(),
                     }
                     df_test_data = {
                         'fold': 1,
                         'X': X_test.flatten() if config.dimension == 1 else X_test.tolist(),
-                        'y_true': Y_test.flatten().numpy(),
-                        'y_noisy': np.nan,
+                        'y_true': Y_test_true.flatten().numpy(),
+                        'y_noisy': Y_noisy_test.flatten().numpy(),
                     }
 
                 # ========== PairwiseGP ==========
