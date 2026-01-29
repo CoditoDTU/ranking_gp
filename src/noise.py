@@ -27,6 +27,7 @@ def add_noise(y_true, noise_type='gaussian', noise_params=None):
     if noise_type == 'gaussian':
         # y = y_true + N(0, std)
         std = noise_params.get('g_std', 1.0)
+        std = float(std)
         #print('gstd is:', std)
         if torch.is_tensor(y_true):
             noise = torch.randn_like(y_true) * std # we get a random value with the shape of y_true and multiplied by the std

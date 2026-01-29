@@ -7,6 +7,7 @@ Generates plots from saved experiment results without re-running experiments.
 Usage:
     python run_visualization.py                     # Plot latest experiment
     python run_visualization.py --id 270126_0       # Plot specific experiment
+    python run_visualization.py --all               # Plot all experiments
 """
 import os
 import sys
@@ -14,61 +15,63 @@ import glob
 import json
 import numpy as np
 import pandas as pd
+import yaml
 
 from src.config import create_visualization_parser, create_experiment_config
 from src.experiment import ExperimentManager
 from src.visualization import plot_experiment_grid
 
 
-def main():
-    parser = create_visualization_parser()
-    args = parser.parse_args()
+def load_experiment_config(data_dir, fallback_config_path):
+    """Load config from the experiment's saved config, falling back to base config.
 
-    BASE_DIR = "experiments"
+    Returns:
+        ExperimentConfig instance with the correct parameters for this experiment.
+    """
+    config_files = glob.glob(os.path.join(data_dir, "config_*.yaml"))
+    if config_files:
+        config_path = os.path.abspath(config_files[0])
+        return create_experiment_config(config_path)
+    return create_experiment_config(fallback_config_path)
 
-    if not os.path.exists(BASE_DIR):
-        print(f"Error: Base directory '{BASE_DIR}' does not exist.")
-        sys.exit(1)
 
-    # Find experiment directory
-    try:
-        data_dir = ExperimentManager.find_experiment(BASE_DIR, args.id)
-    except FileNotFoundError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+def visualize_experiment(data_dir, fallback_config_path):
+    """Generate plots for a single experiment directory.
 
-    print(f"Targeting experiment folder: {data_dir}")
+    Args:
+        data_dir: Path to the experiment directory.
+        fallback_config_path: Path to base config.yaml (used if no saved config found).
 
-    # Load config for dimension info
-    config = create_experiment_config(args.config)
-
+    Returns:
+        True if plots were generated, False if required files were missing.
+    """
     # Find and load predictions CSV
     pred_files = glob.glob(os.path.join(data_dir, "predictions_*.csv"))
     if not pred_files:
-        print(f"Error: No predictions CSV found in '{data_dir}'")
-        sys.exit(1)
+        print(f"  Skipping {data_dir}: no predictions CSV")
+        return False
 
     predictions_file = pred_files[0]
-    print(f"Using predictions file: {predictions_file}")
     df = pd.read_csv(predictions_file)
 
     # Find and load summary CSV
     summary_files = glob.glob(os.path.join(data_dir, "summary_*.csv"))
     if not summary_files:
-        print(f"Error: No summary CSV found in '{data_dir}'")
-        sys.exit(1)
+        print(f"  Skipping {data_dir}: no summary CSV")
+        return False
 
     df_summary = pd.read_csv(summary_files[0])
+
+    # Load config (prefer experiment's saved config for correct LR/dimension)
+    config = load_experiment_config(data_dir, fallback_config_path)
 
     # Load training losses if available
     loss_files = glob.glob(os.path.join(data_dir, "losses_*.json"))
     if loss_files:
         with open(loss_files[0], 'r') as f:
             training_losses = json.load(f)
-        print(f"Loaded training losses from {loss_files[0]}")
     else:
         training_losses = {}
-        print("Warning: No losses file found. Loss plots will be empty.")
 
     # Reconstruct prediction_data from CSV data
     plots_dir = os.path.join(data_dir, "plots")
@@ -121,7 +124,6 @@ def main():
         prediction_data.setdefault(fn_name, {}).setdefault(kernel_name, {})[model_name] = pred_dict
 
     # Generate plots
-    print("\n--- Generating Plots ---")
     for fn_name in prediction_data:
         for kernel_name in prediction_data[fn_name]:
             pdf_path = plot_experiment_grid(
@@ -136,7 +138,50 @@ def main():
             if pdf_path:
                 print(f"  Saved: {pdf_path}")
 
-    print("\n--- Visualization Complete ---")
+    return True
+
+
+def main():
+    parser = create_visualization_parser()
+    args = parser.parse_args()
+
+    BASE_DIR = "experiments"
+
+    if not os.path.exists(BASE_DIR):
+        print(f"Error: Base directory '{BASE_DIR}' does not exist.")
+        sys.exit(1)
+
+    if args.all:
+        # Find all experiment directories
+        exp_dirs = sorted(glob.glob(os.path.join(BASE_DIR, "experiments_*")))
+        exp_dirs = [d for d in exp_dirs if os.path.isdir(d)]
+
+        if not exp_dirs:
+            print("No experiment directories found.")
+            sys.exit(1)
+
+        print(f"Found {len(exp_dirs)} experiment(s)\n")
+        generated = 0
+        for i, data_dir in enumerate(exp_dirs, 1):
+            print(f"[{i}/{len(exp_dirs)}] {os.path.basename(data_dir)}")
+            if visualize_experiment(data_dir, args.config):
+                generated += 1
+
+        print(f"\n--- Visualization Complete: {generated}/{len(exp_dirs)} experiments plotted ---")
+    else:
+        # Single experiment (by ID or latest)
+        try:
+            data_dir = ExperimentManager.find_experiment(BASE_DIR, args.id)
+        except FileNotFoundError as e:
+            print(f"Error: {e}")
+            sys.exit(1)
+
+        print(f"Targeting experiment folder: {data_dir}")
+        if not visualize_experiment(data_dir, args.config):
+            print("Error: Required files missing in experiment directory.")
+            sys.exit(1)
+
+        print("\n--- Visualization Complete ---")
 
 
 if __name__ == "__main__":

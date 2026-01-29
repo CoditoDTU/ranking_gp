@@ -82,6 +82,9 @@ def create_experiment_config(config_path: str, cli_overrides: Dict[str, Any] = N
     # Apply overrides: use CLI value if provided, otherwise use config value
     seed = overrides.get('seed') if overrides.get('seed') is not None else exp['seed']
     noise_types = [overrides['noise_type']] if overrides.get('noise_type') is not None else exp['noise_types']
+    fitness_functions = [overrides['fitness_function']] if overrides.get('fitness_function') is not None else exp['fitness_functions']
+    nsamples = overrides.get('nsamples') if overrides.get('nsamples') is not None else exp['nsamples']
+    g_std = overrides.get('g_std') if overrides.get('g_std') is not None else exp['noise_params']['g_std']
 
     pairwise_iters = overrides.get('pairwise_training_iters') if overrides.get('pairwise_training_iters') is not None else exp['pairwise_gp']['training_iters']
     pairwise_lr = overrides.get('pairwise_lr') if overrides.get('pairwise_lr') is not None else exp['pairwise_gp']['lr']
@@ -93,14 +96,18 @@ def create_experiment_config(config_path: str, cli_overrides: Dict[str, Any] = N
 
     return ExperimentConfig(
         seed=seed,
-        fitness_functions=exp['fitness_functions'],
+        fitness_functions=fitness_functions,
         noise_types=noise_types,
         kernel_names=exp['kernel_names'],
         gp_types=exp.get('gp_types', ['PairwiseGP', 'ExactGP']),
-        noise_params=NoiseParams(**exp['noise_params']),
-        nsamples=exp['nsamples'],
+        noise_params=NoiseParams(
+            g_std=g_std,
+            h_std=exp['noise_params']['h_std'],
+            amplitude_factor=exp['noise_params']['amplitude_factor'],
+        ),
+        nsamples=nsamples,
         n_test_points=exp.get('n_test_points', 100),
-        noise=exp['noise'],
+        noise=overrides.get('noise') if overrides.get('noise') is not None else exp['noise'],
         dimension=exp['dimension'],
         pairwise_gp=GPSettings(
             training_iters=pairwise_iters,

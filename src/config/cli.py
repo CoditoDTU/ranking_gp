@@ -26,6 +26,14 @@ def create_experiment_parser() -> argparse.ArgumentParser:
                         help="ExactGP learning rate (overrides config)")
     parser.add_argument("--exact_optimizer", type=str, default=None,
                         help="ExactGP optimizer (overrides config)")
+    parser.add_argument("--noise", action=argparse.BooleanOptionalAction, default=None,
+                        help="Enable/disable noise (overrides config). Use --noise or --no-noise")
+    parser.add_argument("--fitness_function", type=str, default=None,
+                        help="Single fitness function name (overrides config list)")
+    parser.add_argument("--nsamples", type=int, default=None,
+                        help="Number of training samples (overrides config)")
+    parser.add_argument("--g_std", type=float, default=None,
+                        help="Gaussian noise std (overrides config noise_params.g_std)")
     parser.add_argument("--clear_aggregate", action="store_true",
                         help="Clear existing aggregate summary before running")
     parser.add_argument("--no-plot", action="store_true",
@@ -40,6 +48,8 @@ def create_visualization_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate plots for GP experiments")
     parser.add_argument("--id", type=str, default=None,
                         help="Specific experiment ID (e.g., 270126_0). Defaults to latest.")
+    parser.add_argument("--all", action="store_true",
+                        help="Generate plots for all experiments in experiments/")
     parser.add_argument("--config", type=str, default="config.yaml",
-                        help="Path to config file (for dimension info)")
+                        help="Path to config file (fallback for dimension info)")
     return parser
