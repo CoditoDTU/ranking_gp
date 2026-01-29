@@ -7,8 +7,10 @@ This repository contains a framework for running Gaussian Process (GP) inference
 ```text
 ranking_gp/
 ├── run_experiments.py           # Main experiment runner
+├── run_grid_search.py           # Grid search over experiment parameters
 ├── run_visualization.py         # Standalone visualization (re-plot from saved data)
 ├── config.yaml                  # Configuration file for experiment parameters
+├── grid_config.yaml             # Grid search parameter space definition
 ├── environment.yaml             # Conda environment definition
 ├── module_1.py                  # Legacy monolithic script (deprecated)
 ├── src/
@@ -81,6 +83,10 @@ All CLI flags for `run_experiments.py`:
 | `--config` | Path to config YAML (default: `config.yaml`) |
 | `--seed` | Random seed (overrides config) |
 | `--noise_type` | Noise type (overrides config) |
+| `--noise` / `--no-noise` | Enable/disable noise (overrides config) |
+| `--fitness_function` | Single fitness function name (overrides config list) |
+| `--nsamples` | Number of training samples (overrides config) |
+| `--g_std` | Gaussian noise std (overrides `noise_params.g_std`) |
 | `--pairwise_training_iters` | PairwiseGP training iterations |
 | `--pairwise_lr` | PairwiseGP learning rate |
 | `--pairwise_optimizer` | PairwiseGP optimizer (Adam, SGD, AdamW, LBFGS) |
@@ -90,6 +96,56 @@ All CLI flags for `run_experiments.py`:
 | `--clear_aggregate` | Clear existing aggregate summary before running |
 | `--no-plot` | Skip plot generation after experiments |
 | `--quiet`, `-q` | Suppress terminal output (log to file only) |
+
+### Grid Search
+
+`run_grid_search.py` sweeps over experiment parameters by generating the Cartesian product of value lists defined in `grid_config.yaml` and spawning one `run_experiments.py` subprocess per combination:
+
+```bash
+# Run grid search with default grid_config.yaml
+python run_grid_search.py
+
+# Preview all commands without executing
+python run_grid_search.py --dry_run
+
+# Run up to 4 experiments in parallel
+python run_grid_search.py --max_parallel 4
+
+# Resume a crashed grid search (skips already-completed combinations)
+python run_grid_search.py --resume
+
+# Use a custom grid config and base config
+python run_grid_search.py --grid_config my_grid.yaml --config config.yaml
+```
+
+All CLI flags for `run_grid_search.py`:
+
+| Flag | Description |
+|---|---|
+| `--grid_config` | Path to grid search YAML (default: `grid_config.yaml`) |
+| `--config` | Path to base experiment config YAML (default: `config.yaml`) |
+| `--dry_run` | Print commands without executing |
+| `--max_parallel` | Max concurrent experiments (default: 1 = sequential) |
+| `--resume` | Skip combinations that already have results in `experiments/` |
+| `--clear_aggregate` | Clear aggregate CSV before the first run |
+
+#### Grid Config Format
+
+Define parameter lists in `grid_config.yaml`. The Cartesian product of all lists defines the full grid. Omit any key to use the base config value.
+
+```yaml
+grid_search:
+  pairwise_training_iters: [500, 1000, 1500, 2000]
+  exact_training_iters: [250, 500, 1000]
+  pairwise_lr: [0.0001, 0.001, 0.01]
+  exact_lr: [0.01, 0.1, 0.5]
+```
+
+Available sweep parameters: `fitness_function`, `nsamples`, `g_std`, `pairwise_training_iters`, `exact_training_iters`, `pairwise_lr`, `exact_lr`, `pairwise_optimizer`, `exact_optimizer`, `seed`, `noise_type`.
+
+#### Resume
+
+When `--resume` is passed, the script scans each `experiments/experiments_*/` directory for a `config_*.yaml` and `summary_*.csv`. If both exist, the saved config is parsed to extract the grid-relevant parameters and that combination is skipped. Incomplete runs (missing summary CSV) are re-executed.
 
 ### Re-plotting from Saved Results
 
@@ -101,7 +157,20 @@ python run_visualization.py
 
 # Plot a specific experiment by ID
 python run_visualization.py --id 270126_0
+
+# Plot all experiments
+python run_visualization.py --all
 ```
+
+All CLI flags for `run_visualization.py`:
+
+| Flag | Description |
+|---|---|
+| `--id` | Specific experiment ID (e.g., `270126_0`). Defaults to latest. |
+| `--all` | Generate plots for all experiments in `experiments/` |
+| `--config` | Path to fallback config file (default: `config.yaml`) |
+
+When `--all` is used, each experiment's saved `config_*.yaml` is loaded so that plots reflect the correct learning rates and dimension for that run.
 
 ## Configuration
 
