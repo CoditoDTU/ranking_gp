@@ -31,10 +31,10 @@ from botorch.optim.closures import get_loss_closure_with_grads
 # Add src to path so we can import modules from it
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'src')))
 
-from fitness_functions import *
-from models import FlexibleExactGPModel, build_kernel
-from noise import add_noise
-from datatools import get_comparisons, apply_sigmoid
+from src.fitness_functions import *
+from src.models import FlexibleExactGPModel, build_kernel
+from src.noise import add_noise
+from src.datatools import get_comparisons, apply_sigmoid
 
 from src.solvers import get_optimizer
 
