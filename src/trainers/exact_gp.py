@@ -5,7 +5,7 @@ Extracted from module_1.py lines 403-555.
 import torch
 import gpytorch
 import numpy as np
-from typing import Tuple, List, Any
+from typing import Tuple, List, Any, Optional
 
 from gpytorch.likelihoods import GaussianLikelihood
 
@@ -27,7 +27,11 @@ class ExactGPTrainer(BaseTrainer):
         y_train: torch.Tensor,
         comparisons: torch.Tensor = None,
         X_train_pairwise: torch.Tensor = None,
-    ) -> List[float]:
+        X_val: Optional[torch.Tensor] = None,
+        y_val: Optional[torch.Tensor] = None,
+        val_comparisons: Optional[torch.Tensor] = None,
+        X_val_pairwise: Optional[torch.Tensor] = None,
+    ) -> Tuple[List[float], List[float]]:
         """
         Train ExactGP model.
 
@@ -36,9 +40,13 @@ class ExactGPTrainer(BaseTrainer):
             y_train: Training targets.
             comparisons: Ignored (interface compatibility).
             X_train_pairwise: Ignored (interface compatibility).
+            X_val: Validation inputs (optional).
+            y_val: Validation targets (optional).
+            val_comparisons: Ignored (interface compatibility).
+            X_val_pairwise: Ignored (interface compatibility).
 
         Returns:
-            List of training losses.
+            Tuple of (training_losses, validation_losses).
         """
         # Prepare data on device
         X = X_train.to(self.device, dtype=torch.double)
@@ -55,6 +63,13 @@ class ExactGPTrainer(BaseTrainer):
 
         # Setup optimizer
         self.optimizer = get_optimizer(self.optimizer_name, self.model.parameters(), self.lr)
+
+        # Prepare validation data
+        self.val_losses = []
+        has_val = X_val is not None and y_val is not None
+        if has_val:
+            X_val_device = X_val.to(self.device, dtype=torch.double)
+            y_val_device = y_val.to(self.device, dtype=torch.double).squeeze(-1)
 
         # Training loop
         self.model.train()
@@ -85,6 +100,17 @@ class ExactGPTrainer(BaseTrainer):
 
             self.losses.append(loss.item())
 
+            # Compute validation NLL
+            if has_val:
+                self.model.eval()
+                self.likelihood.eval()
+                with torch.no_grad(), gpytorch.settings.fast_pred_var():
+                    val_pred_dist = self.likelihood(self.model(X_val_device))
+                    val_nll = -val_pred_dist.log_prob(y_val_device).sum().item()
+                self.val_losses.append(val_nll)
+                self.model.train()
+                self.likelihood.train()
+
             if (i + 1) % 20 == 0:
                 try:
                     ls = self.model.covar_module.base_kernel.lengthscale.item()
@@ -92,7 +118,7 @@ class ExactGPTrainer(BaseTrainer):
                 except AttributeError:
                     print(f"  Iter {i+1} - Loss: {loss.item():.4f}")
 
-        return self.losses
+        return self.losses, self.val_losses
 
     def predict(self, X: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
         """Make predictions with trained model."""

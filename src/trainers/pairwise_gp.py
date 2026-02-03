@@ -4,7 +4,7 @@ Extracted from module_1.py lines 236-401.
 """
 import torch
 import numpy as np
-from typing import Tuple, List, Any
+from typing import Tuple, List, Any, Optional
 
 from botorch.models import PairwiseGP
 from botorch.models.pairwise_gp import PairwiseLaplaceMarginalLogLikelihood
@@ -28,7 +28,11 @@ class PairwiseGPTrainer(BaseTrainer):
         y_train: torch.Tensor,
         comparisons: torch.Tensor = None,
         X_train_pairwise: torch.Tensor = None,
-    ) -> List[float]:
+        X_val: Optional[torch.Tensor] = None,
+        y_val: Optional[torch.Tensor] = None,
+        val_comparisons: Optional[torch.Tensor] = None,
+        X_val_pairwise: Optional[torch.Tensor] = None,
+    ) -> Tuple[List[float], List[float]]:
         """
         Train PairwiseGP model.
 
@@ -37,9 +41,13 @@ class PairwiseGPTrainer(BaseTrainer):
             y_train: Training targets (used for comparison generation if needed).
             comparisons: Pre-computed pairwise comparisons.
             X_train_pairwise: Subset of X_train used in the comparisons.
+            X_val: Validation inputs (optional).
+            y_val: Validation targets (optional).
+            val_comparisons: Validation pairwise comparisons (optional).
+            X_val_pairwise: Pairwise subset of X_val (optional).
 
         Returns:
-            List of training losses.
+            Tuple of (training_losses, validation_losses).
         """
         # Build model components
         kernel = build_kernel(self.kernel_name, self.dimension)
@@ -56,6 +64,19 @@ class PairwiseGPTrainer(BaseTrainer):
 
         # Setup optimizer
         self.optimizer = get_optimizer(self.optimizer_name, self.model.parameters(), self.lr)
+
+        # Setup validation proxy model (created once, reused each iteration)
+        self.val_losses = []
+        has_val = X_val_pairwise is not None and val_comparisons is not None
+        if has_val:
+            val_kernel = build_kernel(self.kernel_name, self.dimension)
+            val_proxy = PairwiseGP(
+                X_val_pairwise, val_comparisons,
+                covar_module=val_kernel,
+                consolidate_atol=0.0,
+            ).double()
+            val_proxy.to(self.device)
+            val_mll = PairwiseLaplaceMarginalLogLikelihood(val_proxy.likelihood, val_proxy)
 
         # Training loop
         self.model.train()
@@ -79,6 +100,17 @@ class PairwiseGPTrainer(BaseTrainer):
 
             self.losses.append(loss.item())
 
+            # Compute validation NLL with current hyperparameters
+            if has_val:
+                val_proxy.covar_module.load_state_dict(
+                    self.model.covar_module.state_dict()
+                )
+                val_proxy.train()
+                with torch.no_grad():
+                    val_output = val_proxy(val_proxy.datapoints)
+                    val_loss = -val_mll(val_output, val_proxy.train_targets).item()
+                self.val_losses.append(val_loss)
+
             if (i + 1) % 20 == 0:
                 try:
                     ls = self.model.covar_module.base_kernel.lengthscale.item()
@@ -86,10 +118,14 @@ class PairwiseGPTrainer(BaseTrainer):
                 except AttributeError:
                     print(f"  Iter {i+1} - Loss: {loss.item():.4f}")
 
+        # Cleanup validation proxy
+        if has_val:
+            del val_proxy, val_mll, val_kernel
+
         # Store mll for later use
         self._mll = mll
 
-        return self.losses
+        return self.losses, self.val_losses
 
     def predict(self, X: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
         """Make predictions with trained model."""
