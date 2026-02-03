@@ -93,6 +93,7 @@ All CLI flags for `run_experiments.py`:
 | `--exact_training_iters` | ExactGP training iterations |
 | `--exact_lr` | ExactGP learning rate |
 | `--exact_optimizer` | ExactGP optimizer (Adam, SGD, AdamW, LBFGS) |
+| `--val_fraction` | Fraction of training data for validation (0.0-1.0, default: 0.0) |
 | `--clear_aggregate` | Clear existing aggregate summary before running |
 | `--no-plot` | Skip plot generation after experiments |
 | `--quiet`, `-q` | Suppress terminal output (log to file only) |
@@ -135,17 +136,49 @@ Define parameter lists in `grid_config.yaml`. The Cartesian product of all lists
 
 ```yaml
 grid_search:
+  # Training iterations
   pairwise_training_iters: [500, 1000, 1500, 2000]
   exact_training_iters: [250, 500, 1000]
+
+  # Learning rates
   pairwise_lr: [0.0001, 0.001, 0.01]
   exact_lr: [0.01, 0.1, 0.5]
+
+  # Validation split (optional)
+  val_fraction: [0.0, 0.1, 0.2]
+
+  # Other sweepable parameters
+  # nsamples: [25, 50, 100]
+  # seed: [42, 123, 456]
+  # g_std: [0.5, 1.0, 1.5]
 ```
 
-Available sweep parameters: `fitness_function`, `nsamples`, `g_std`, `pairwise_training_iters`, `exact_training_iters`, `pairwise_lr`, `exact_lr`, `pairwise_optimizer`, `exact_optimizer`, `seed`, `noise_type`.
+**Example**: The config above produces `4 × 3 × 3 × 3 × 3 = 324` combinations.
+
+Available sweep parameters:
+
+| Parameter | Description |
+|---|---|
+| `fitness_function` | Single fitness function to test |
+| `nsamples` | Number of training samples |
+| `g_std` | Gaussian noise standard deviation |
+| `pairwise_training_iters` | PairwiseGP training iterations |
+| `exact_training_iters` | ExactGP training iterations |
+| `pairwise_lr` | PairwiseGP learning rate |
+| `exact_lr` | ExactGP learning rate |
+| `pairwise_optimizer` | PairwiseGP optimizer (Adam, SGD, AdamW, LBFGS) |
+| `exact_optimizer` | ExactGP optimizer (Adam, SGD, AdamW, LBFGS) |
+| `seed` | Random seed |
+| `noise_type` | Noise type (gaussian) |
+| `val_fraction` | Fraction of training data for validation |
 
 #### Resume
 
 When `--resume` is passed, the script scans each `experiments/experiments_*/` directory for a `config_*.yaml` and `summary_*.csv`. If both exist, the saved config is parsed to extract the grid-relevant parameters and that combination is skipped. Incomplete runs (missing summary CSV) are re-executed.
+
+#### Output Aggregation
+
+All grid search results are automatically aggregated into `experiments/aggregate_summary.csv`. Each row corresponds to a single model (GP type + kernel + fitness function) from each experiment run. When multiple seeds are used, `experiments/aggregate_stats.csv` provides mean and standard deviation across seeds.
 
 ### Re-plotting from Saved Results
 
@@ -194,6 +227,7 @@ experiment:
   n_test_points: 100
   noise: False
   dimension: 1
+  val_fraction: 0.2  # Fraction of training data for validation (0.0 = no validation)
 
   pairwise_gp:
     training_iters: 1500
