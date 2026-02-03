@@ -44,6 +44,14 @@ class TrainingResult:
     X_test: np.ndarray = None
     Y_test: np.ndarray = None
 
+    # Validation fields
+    y_pred_val: np.ndarray = None
+    variance_val: np.ndarray = None
+    val_nll: float = None
+    val_losses: List[float] = field(default_factory=list)
+    X_val: np.ndarray = None
+    Y_val: np.ndarray = None
+
 
 class ResultsCollector:
     """Collects and saves experiment results."""
@@ -57,13 +65,16 @@ class ResultsCollector:
 
         # For plotting: {fn_name: {kernel_name: {model_name: losses_list}}}
         self.training_losses: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
+        # Validation losses: {fn_name: {kernel_name: {model_name: val_losses_list}}}
+        self.validation_losses: Dict[str, Dict[str, Dict[str, List[float]]]] = {}
         # For plotting: {fn_name: {kernel_name: {model_name: pred_dict}}}
         self.prediction_data: Dict[str, Dict[str, Dict[str, Dict]]] = {}
 
         self._experiment_counter = 0
 
     def add_result(self, result: TrainingResult,
-                   df_train_data: Dict, df_test_data: Dict):
+                   df_train_data: Dict, df_test_data: Dict,
+                   df_val_data: Dict = None):
         """
         Add a training result to the collector.
 
@@ -71,6 +82,7 @@ class ResultsCollector:
             result: TrainingResult from a trainer.
             df_train_data: Base training data dict (fold, X, y_true, ...).
             df_test_data: Base test data dict (fold, X, y_true, ...).
+            df_val_data: Base validation data dict (fold=2, X, y_true, ...). Optional.
         """
         std_train = np.sqrt(result.variance_train)
         std_test = np.sqrt(result.variance_test)
@@ -88,7 +100,18 @@ class ResultsCollector:
         df_test['std'] = std_test
         df_test['lengthscale'] = result.lengthscale
 
-        df = pd.concat([df_train, df_test]).reset_index(drop=True)
+        dfs_to_concat = [df_train, df_test]
+
+        if df_val_data is not None and result.y_pred_val is not None:
+            std_val = np.sqrt(result.variance_val)
+            df_val = pd.DataFrame(df_val_data)
+            df_val['y_pred'] = result.y_pred_val
+            df_val['variance'] = result.variance_val
+            df_val['std'] = std_val
+            df_val['lengthscale'] = result.lengthscale
+            dfs_to_concat.append(df_val)
+
+        df = pd.concat(dfs_to_concat).reset_index(drop=True)
 
         exp_name = (
             f"{result.model_name}_{result.fn_name}_{result.dimension}D"
@@ -109,6 +132,7 @@ class ResultsCollector:
             "kernel": result.kernel_name,
             "train_nll": result.train_nll,
             "test_nll": result.test_nll,
+            "val_nll": result.val_nll,
             "kendal_tau": result.kendall_tau,
             "spearman": result.spearman,
         })
@@ -120,6 +144,9 @@ class ResultsCollector:
         model = result.model_name
 
         self.training_losses.setdefault(fn, {}).setdefault(kernel, {})[model] = result.losses.copy()
+
+        if result.val_losses:
+            self.validation_losses.setdefault(fn, {}).setdefault(kernel, {})[model] = result.val_losses.copy()
 
         # Store prediction data for plotting
         self.prediction_data.setdefault(fn, {}).setdefault(kernel, {})[model] = {
@@ -155,6 +182,16 @@ class ResultsCollector:
         print(f"Training losses saved to {filepath}")
         return filepath
 
+    def save_val_losses(self) -> Optional[str]:
+        """Save per-iteration validation losses to JSON."""
+        if not self.validation_losses:
+            return None
+        filepath = os.path.join(self.output_dir, f"val_losses_{self.experiment_id}.json")
+        with open(filepath, 'w') as f:
+            json.dump(self.validation_losses, f)
+        print(f"Validation losses saved to {filepath}")
+        return filepath
+
     def save_predictions(self) -> Optional[str]:
         """Save merged predictions CSV. Returns filepath or None."""
         if not self.all_predictions:
@@ -175,7 +212,8 @@ class ResultsCollector:
 
         final_columns = [
             'id', 'GP', 'FitnessFn', 'dimension', 'seed', 'Noise_type',
-            'noise_level', 'kernel', 'train_nll', 'test_nll', 'kendal_tau', 'spearman',
+            'noise_level', 'kernel', 'train_nll', 'test_nll', 'val_nll',
+            'kendal_tau', 'spearman',
         ]
         df_final = df.reindex(columns=final_columns)
 
@@ -215,22 +253,19 @@ class ResultsCollector:
         updated.to_csv(aggregate_path, index=False)
         print(f"Aggregate summary (across seeds) saved to {aggregate_path}")
 
-        # Generate per-experiment statistics if multiple seeds
-        if len(updated['seed'].unique()) > 1:
-            group_cols = ['GP', 'FitnessFn', 'dimension', 'Noise_type', 'noise_level', 'kernel']
-            metric_cols = ['train_nll', 'test_nll', 'kendal_tau', 'spearman']
+        # Generate per-experiment statistics
+        group_cols = ['GP', 'FitnessFn', 'dimension', 'Noise_type', 'noise_level', 'kernel']
+        metric_cols = ['train_nll', 'test_nll', 'val_nll', 'kendal_tau', 'spearman']
 
-            agg_stats = updated.groupby(group_cols)[metric_cols].agg(['mean', 'std']).reset_index()
-            agg_stats.columns = [
-                f"{col[0]}_{col[1]}" if col[1] else col[0] for col in agg_stats.columns
-            ]
-            agg_stats['n_seeds'] = updated.groupby(group_cols)['seed'].nunique().values
+        agg_stats = updated.groupby(group_cols)[metric_cols].agg(['mean', 'std']).reset_index()
+        agg_stats.columns = [
+            f"{col[0]}_{col[1]}" if col[1] else col[0] for col in agg_stats.columns
+        ]
+        agg_stats['n_seeds'] = updated.groupby(group_cols)['seed'].nunique().values
 
-            stats_path = os.path.join(base_dir, "aggregate_stats.csv")
-            agg_stats.to_csv(stats_path, index=False)
-            print(f"Aggregate statistics saved to {stats_path}")
-            print("\n--- Aggregate Statistics (across seeds) ---")
-            print(agg_stats)
-            return agg_stats
-
-        return None
+        stats_path = os.path.join(base_dir, "aggregate_stats.csv")
+        agg_stats.to_csv(stats_path, index=False)
+        print(f"Aggregate statistics saved to {stats_path}")
+        print("\n--- Aggregate Statistics (across seeds) ---")
+        print(agg_stats)
+        return agg_stats

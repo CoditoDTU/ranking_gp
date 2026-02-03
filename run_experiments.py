@@ -12,21 +12,17 @@ Usage:
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
-import time
 import warnings
 import random
 import torch
 import numpy as np
 from scipy.stats import kendalltau, spearmanr
-from tqdm import tqdm
-
 from src.config import create_experiment_parser, create_experiment_config
 from src.experiment import ExperimentManager, ResultsCollector, TrainingResult, ProgressTracker
 from src.trainers import PairwiseGPTrainer, ExactGPTrainer
 from src.fitness_functions import fitness_function
 from src.datatools import get_comparisons
 from src.noise import add_noise
-from src.visualization import plot_experiment_grid
 
 
 def main():
@@ -83,21 +79,51 @@ def main():
         X_train_tensor = torch.tensor(X_train, dtype=torch.float64)
         X_test_tensor = torch.tensor(X_test, dtype=torch.float64)
 
-        Y_train = Y_all_true[:config.nsamples]
+        Y_train_all = Y_all_true[:config.nsamples]
         Y_test_true = Y_all_true[config.nsamples:]
+
+        # --- Validation split ---
+        has_val = config.val_fraction > 0.0
+        if has_val:
+            n_val = int(config.nsamples * config.val_fraction)
+            n_train_reduced = config.nsamples - n_val
+            perm = np.random.permutation(config.nsamples)
+            train_idx = perm[:n_train_reduced]
+            val_idx = perm[n_train_reduced:]
+
+            X_train_reduced = X_train[train_idx]
+            X_val = X_train[val_idx]
+            X_train_reduced_tensor = torch.tensor(X_train_reduced, dtype=torch.float64)
+            X_val_tensor = torch.tensor(X_val, dtype=torch.float64)
+
+            Y_train = Y_train_all[train_idx]
+            Y_val_true = Y_train_all[val_idx]
+        else:
+            X_train_reduced = X_train
+            X_train_reduced_tensor = X_train_tensor
+            X_val = None
+            X_val_tensor = None
+            Y_train = Y_train_all
+            Y_val_true = None
 
         noise_iterator = ['none'] if not config.noise else config.noise_types
 
         for noise_type in noise_iterator:
 
             if not config.noise:
-                comparisons, X_train_pairwise = get_comparisons(Y_train, X=X_train_tensor)
+                comparisons, X_train_pairwise = get_comparisons(Y_train, X=X_train_reduced_tensor)
                 noise_level = 0.0
                 noise_type = 'none'
                 Y_noisy = None
                 Y_test = Y_test_true
+                Y_val = Y_val_true if has_val else None
+
+                if has_val:
+                    val_comparisons, X_val_pairwise = get_comparisons(Y_val_true, X=X_val_tensor)
+                else:
+                    val_comparisons, X_val_pairwise = None, None
             else:
-                # Noise all labels, then subset into train/test
+                # Noise all labels, then subset into train/test/val
                 noise_level = config.noise_params.g_std
                 Y_all_noisy = add_noise(
                     Y_all_true, noise_type=noise_type,
@@ -105,19 +131,32 @@ def main():
                                   'h_std': config.noise_params.h_std,
                                   'amplitude_factor': config.noise_params.amplitude_factor},
                 )
-                Y_noisy_train = Y_all_noisy[:config.nsamples]
+                Y_noisy_train_all = Y_all_noisy[:config.nsamples]
                 Y_noisy_test = Y_all_noisy[config.nsamples:]
+
+                if has_val:
+                    Y_noisy_train = Y_noisy_train_all[train_idx]
+                    Y_noisy_val = Y_noisy_train_all[val_idx]
+                else:
+                    Y_noisy_train = Y_noisy_train_all
+                    Y_noisy_val = None
 
                 Y_noisy = Y_noisy_train
                 Y_test = Y_noisy_test
-                comparisons, X_train_pairwise = get_comparisons(Y_noisy_train, X=X_train_tensor)
+                Y_val = Y_noisy_val if has_val else None
+                comparisons, X_train_pairwise = get_comparisons(Y_noisy_train, X=X_train_reduced_tensor)
+
+                if has_val:
+                    val_comparisons, X_val_pairwise = get_comparisons(Y_noisy_val, X=X_val_tensor)
+                else:
+                    val_comparisons, X_val_pairwise = None, None
 
             for kernel_name in config.kernel_names:
                 # Build data dicts for results storage
                 if not config.noise:
                     df_train_data = {
                         'fold': 0,
-                        'X': X_train.flatten() if config.dimension == 1 else X_train.tolist(),
+                        'X': X_train_reduced.flatten() if config.dimension == 1 else X_train_reduced.tolist(),
                         'y_true': Y_train.flatten().numpy(),
                     }
                     df_test_data = {
@@ -128,7 +167,7 @@ def main():
                 else:
                     df_train_data = {
                         'fold': 0,
-                        'X': X_train.flatten() if config.dimension == 1 else X_train.tolist(),
+                        'X': X_train_reduced.flatten() if config.dimension == 1 else X_train_reduced.tolist(),
                         'y_true': Y_train.flatten().numpy(),
                         'y_noisy': Y_noisy_train.flatten().numpy(),
                     }
@@ -139,14 +178,34 @@ def main():
                         'y_noisy': Y_noisy_test.flatten().numpy(),
                     }
 
+                # Build validation data dict
+                df_val_data = None
+                if has_val:
+                    if not config.noise:
+                        df_val_data = {
+                            'fold': 2,
+                            'X': X_val.flatten() if config.dimension == 1 else X_val.tolist(),
+                            'y_true': Y_val_true.flatten().numpy(),
+                        }
+                    else:
+                        df_val_data = {
+                            'fold': 2,
+                            'X': X_val.flatten() if config.dimension == 1 else X_val.tolist(),
+                            'y_true': Y_val_true.flatten().numpy(),
+                            'y_noisy': Y_noisy_val.flatten().numpy(),
+                        }
+
                 # ========== PairwiseGP ==========
                 progress.set_status(f"{fn_name}/{kernel_name}/PairwiseGP")
                 _train_and_record(
                     PairwiseGPTrainer, config.pairwise_gp, kernel_name, config.dimension,
-                    device, X_train_tensor, Y_train, X_test_tensor, Y_test,
-                    comparisons, X_train_pairwise, X_train, X_test,
+                    device, X_train_reduced_tensor, Y_train, X_test_tensor, Y_test,
+                    comparisons, X_train_pairwise, X_train_reduced, X_test,
                     fn_name, noise_type, noise_level, config.seed,
                     results, df_train_data, df_test_data,
+                    X_val_tensor=X_val_tensor, Y_val=Y_val,
+                    val_comparisons=val_comparisons, X_val_pairwise=X_val_pairwise,
+                    X_val_np=X_val, df_val_data=df_val_data,
                 )
                 progress.update()
 
@@ -155,10 +214,13 @@ def main():
                 Y_train_exact = Y_noisy if config.noise else Y_train
                 _train_and_record(
                     ExactGPTrainer, config.exact_gp, kernel_name, config.dimension,
-                    device, X_train_tensor, Y_train_exact, X_test_tensor, Y_test,
-                    comparisons, X_train_pairwise, X_train, X_test,
+                    device, X_train_reduced_tensor, Y_train_exact, X_test_tensor, Y_test,
+                    comparisons, X_train_pairwise, X_train_reduced, X_test,
                     fn_name, noise_type, noise_level, config.seed,
                     results, df_train_data, df_test_data,
+                    X_val_tensor=X_val_tensor, Y_val=Y_val,
+                    val_comparisons=val_comparisons, X_val_pairwise=X_val_pairwise,
+                    X_val_np=X_val, df_val_data=df_val_data,
                 )
                 progress.update()
 
@@ -168,29 +230,13 @@ def main():
     print("\n--- Saving Merged Predictions ---")
     results.save_predictions()
     results.save_losses()
+    if config.val_fraction > 0.0:
+        results.save_val_losses()
     results.save_summary()
     results.save_aggregate(exp_manager.base_dir, config.clear_aggregate)
 
-    # --- Generate plots ---
-    if not args.no_plot:
-        print("\n--- Generating Comprehensive Plots ---")
-        for fn_name in results.prediction_data:
-            for kernel_name in results.prediction_data[fn_name]:
-                pdf_path = plot_experiment_grid(
-                    fn_name, kernel_name,
-                    results.prediction_data[fn_name][kernel_name],
-                    results.training_losses.get(fn_name, {}).get(kernel_name, {}),
-                    config.dimension,
-                    config.exact_gp.lr,
-                    config.pairwise_gp.lr,
-                    exp_manager.plots_dir,
-                )
-                if pdf_path:
-                    print(f"  Saved: {pdf_path}")
-    else:
-        print("\n--- Skipping plot generation (--no-plot) ---")
-
     print(f"\n--- Experiment Complete (elapsed: {progress.elapsed_str}) ---")
+    print("To generate plots, run: python run_visualization.py")
 
     # Print completion message to terminal (even in quiet mode)
     if args.quiet:
@@ -205,6 +251,8 @@ def _train_and_record(
     comparisons, X_train_pairwise, X_train_np, X_test_np,
     fn_name, noise_type, noise_level, seed,
     results, df_train_data, df_test_data,
+    X_val_tensor=None, Y_val=None, val_comparisons=None, X_val_pairwise=None,
+    X_val_np=None, df_val_data=None,
 ):
     """Train a GP model and record results."""
     trainer = trainer_class(
@@ -220,11 +268,22 @@ def _train_and_record(
         print(f"Training {trainer.model_name}...")
 
         # Train
-        losses = trainer.train(X_train_tensor, Y_train, comparisons, X_train_pairwise)
+        losses, val_losses = trainer.train(
+            X_train_tensor, Y_train, comparisons, X_train_pairwise,
+            X_val=X_val_tensor, y_val=Y_val,
+            val_comparisons=val_comparisons, X_val_pairwise=X_val_pairwise,
+        )
 
         # Predict
         y_pred_train, var_train = trainer.predict(X_train_tensor)
         y_pred_test, var_test = trainer.predict(X_test_tensor)
+
+        # Predict on validation set
+        if X_val_tensor is not None:
+            y_pred_val, var_val = trainer.predict(X_val_tensor)
+            val_nll = trainer.compute_nll(X_val_tensor, Y_val, val_comparisons)
+        else:
+            y_pred_val, var_val, val_nll = None, None, None
 
         # Train NLL is the last training loss
         train_nll = losses[-1]
@@ -258,9 +317,15 @@ def _train_and_record(
             Y_train=Y_train.numpy().copy(),
             X_test=X_test_np.copy(),
             Y_test=Y_test.numpy().copy(),
+            y_pred_val=y_pred_val,
+            variance_val=var_val,
+            val_nll=val_nll,
+            val_losses=val_losses,
+            X_val=X_val_np.copy() if X_val_np is not None else None,
+            Y_val=Y_val.numpy().copy() if Y_val is not None else None,
         )
 
-        results.add_result(result, df_train_data, df_test_data)
+        results.add_result(result, df_train_data, df_test_data, df_val_data)
 
     except Exception as e:
         print(f"ERROR training {trainer.model_name} with {kernel_name}: {e}")

@@ -34,10 +34,10 @@ def create_experiment_parser() -> argparse.ArgumentParser:
                         help="Number of training samples (overrides config)")
     parser.add_argument("--g_std", type=float, default=None,
                         help="Gaussian noise std (overrides config noise_params.g_std)")
+    parser.add_argument("--val_fraction", type=float, default=None,
+                        help="Fraction of training data for validation (0.0-1.0, overrides config)")
     parser.add_argument("--clear_aggregate", action="store_true",
                         help="Clear existing aggregate summary before running")
-    parser.add_argument("--no-plot", action="store_true",
-                        help="Skip plot generation after experiments")
     parser.add_argument("--quiet", "-q", action="store_true",
                         help="Suppress terminal output (log to file only)")
     return parser

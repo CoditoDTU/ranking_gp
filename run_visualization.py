@@ -73,6 +73,14 @@ def visualize_experiment(data_dir, fallback_config_path):
     else:
         training_losses = {}
 
+    # Load validation losses if available
+    val_loss_files = glob.glob(os.path.join(data_dir, "val_losses_*.json"))
+    if val_loss_files:
+        with open(val_loss_files[0], 'r') as f:
+            validation_losses = json.load(f)
+    else:
+        validation_losses = {}
+
     # Reconstruct prediction_data from CSV data
     plots_dir = os.path.join(data_dir, "plots")
     os.makedirs(plots_dir, exist_ok=True)
@@ -130,6 +138,7 @@ def visualize_experiment(data_dir, fallback_config_path):
                 fn_name, kernel_name,
                 prediction_data[fn_name][kernel_name],
                 training_losses.get(fn_name, {}).get(kernel_name, {}),
+                validation_losses.get(fn_name, {}).get(kernel_name, {}),
                 config.dimension,
                 config.exact_gp.lr,
                 config.pairwise_gp.lr,

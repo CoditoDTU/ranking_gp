@@ -37,6 +37,7 @@ GRID_KEY_TO_CLI_FLAG = {
     "pairwise_lr":             "--pairwise_lr",
     "exact_lr":                "--exact_lr",
     "noise_type":              "--noise_type",
+    "val_fraction":            "--val_fraction",
 }
 
 
@@ -54,6 +55,7 @@ GRID_KEY_TO_CONFIG_PATH = {
     "g_std":                   ("noise_params", "g_std"),
     "seed":                    ("seed",),
     "noise_type":              ("noise_types",),
+    "val_fraction":            ("val_fraction",),
 }
 
 
@@ -164,7 +166,7 @@ def build_command(combo: dict, base_config: str) -> list:
     """Build the subprocess command for a single grid point."""
     cmd = [sys.executable, "run_experiments.py",
            "--config", base_config,
-           "--no-plot", "--quiet"]
+           "--quiet"]
 
     for key, value in combo.items():
         flag = GRID_KEY_TO_CLI_FLAG.get(key)

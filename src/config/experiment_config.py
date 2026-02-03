@@ -48,6 +48,7 @@ class ExperimentConfig:
     exact_gp: GPSettings
     sigmoid: SigmoidSettings
     clear_aggregate: bool = False
+    val_fraction: float = 0.0
 
 
 def load_config(config_path: str) -> dict:
@@ -85,6 +86,7 @@ def create_experiment_config(config_path: str, cli_overrides: Dict[str, Any] = N
     fitness_functions = [overrides['fitness_function']] if overrides.get('fitness_function') is not None else exp['fitness_functions']
     nsamples = overrides.get('nsamples') if overrides.get('nsamples') is not None else exp['nsamples']
     g_std = overrides.get('g_std') if overrides.get('g_std') is not None else exp['noise_params']['g_std']
+    val_fraction = overrides.get('val_fraction') if overrides.get('val_fraction') is not None else exp.get('val_fraction', 0.0)
 
     pairwise_iters = overrides.get('pairwise_training_iters') if overrides.get('pairwise_training_iters') is not None else exp['pairwise_gp']['training_iters']
     pairwise_lr = overrides.get('pairwise_lr') if overrides.get('pairwise_lr') is not None else exp['pairwise_gp']['lr']
@@ -121,4 +123,5 @@ def create_experiment_config(config_path: str, cli_overrides: Dict[str, Any] = N
         ),
         sigmoid=SigmoidSettings(**exp['sigmoid']),
         clear_aggregate=overrides.get('clear_aggregate', False),
+        val_fraction=val_fraction,
     )

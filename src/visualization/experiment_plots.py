@@ -1,8 +1,8 @@
 """
-Comprehensive experiment plots (3x2 grid).
+Comprehensive experiment plots (4x2 grid).
 Extracted from module_1.py lines 630-798.
 
-Rows: Training Loss | Function Fit | Monotonicity (True vs Predicted)
+Rows: Training Loss | Validation Loss | Function Fit | Monotonicity (True vs Predicted)
 Columns: ExactGP | PairwiseGP
 """
 import os
@@ -16,13 +16,14 @@ def plot_experiment_grid(
     kernel_name: str,
     prediction_data: Dict[str, Dict],
     training_losses: Dict[str, List[float]],
+    validation_losses: Dict[str, List[float]],
     dimension: int,
     exact_lr: float,
     pairwise_lr: float,
     output_dir: str,
 ) -> Optional[str]:
     """
-    Generate a 3x2 grid plot for a function/kernel combination.
+    Generate a 4x2 grid plot for a function/kernel combination.
 
     Args:
         fn_name: Fitness function name.
@@ -31,6 +32,7 @@ def plot_experiment_grid(
                          with prediction dicts containing X_train, Y_train,
                          X_test, Y_test, y_pred, std, tau, spearman, test_nll.
         training_losses: Dict keyed by model name with loss lists.
+        validation_losses: Dict keyed by model name with val loss lists.
         dimension: Input dimension.
         exact_lr: ExactGP learning rate (for title).
         pairwise_lr: PairwiseGP learning rate (for title).
@@ -45,7 +47,7 @@ def plot_experiment_grid(
     if not (has_exact or has_pairwise):
         return None
 
-    fig, axes = plt.subplots(3, 2, figsize=(14, 12))
+    fig, axes = plt.subplots(4, 2, figsize=(14, 16))
     fig.suptitle(f'{fn_name} - {kernel_name}', fontsize=14, fontweight='bold')
 
     # Get common data from whichever GP is available
@@ -71,25 +73,29 @@ def plot_experiment_grid(
     _plot_training_loss(axes[0, 0], training_losses.get('ExactGP'), 'ExactGP', exact_lr, 'b')
     _plot_training_loss(axes[0, 1], training_losses.get('PairwiseGP'), 'PairwiseGP', pairwise_lr, 'g')
 
-    # ===== ROW 1: Function Fit =====
+    # ===== ROW 1: Validation Loss =====
+    _plot_validation_loss(axes[1, 0], validation_losses.get('ExactGP'), 'ExactGP', exact_lr, 'b')
+    _plot_validation_loss(axes[1, 1], validation_losses.get('PairwiseGP'), 'PairwiseGP', pairwise_lr, 'g')
+
+    # ===== ROW 2: Function Fit =====
     if dimension == 1:
         _plot_function_fit_1d(
-            axes[1, 0], prediction_data.get('ExactGP'),
+            axes[2, 0], prediction_data.get('ExactGP'),
             X_test_sorted, Y_test_sorted, X_train_flat, Y_train_flat,
             sort_idx, 'ExactGP', 'b', show_ground_truth=True,
         )
         _plot_function_fit_1d(
-            axes[1, 1], prediction_data.get('PairwiseGP'),
+            axes[2, 1], prediction_data.get('PairwiseGP'),
             X_test_sorted, Y_test_sorted, X_train_flat, Y_train_flat,
             sort_idx, 'PairwiseGP', 'g', show_ground_truth=False,
         )
     else:
-        _plot_nd_placeholder(axes[1, 0], 'ExactGP', dimension, has_exact)
-        _plot_nd_placeholder(axes[1, 1], 'PairwiseGP', dimension, has_pairwise)
+        _plot_nd_placeholder(axes[2, 0], 'ExactGP', dimension, has_exact)
+        _plot_nd_placeholder(axes[2, 1], 'PairwiseGP', dimension, has_pairwise)
 
-    # ===== ROW 2: Monotonicity (True vs Predicted) =====
-    _plot_monotonicity(axes[2, 0], prediction_data.get('ExactGP'), Y_test, 'ExactGP', 'b')
-    _plot_monotonicity(axes[2, 1], prediction_data.get('PairwiseGP'), Y_test, 'PairwiseGP', 'g')
+    # ===== ROW 3: Monotonicity (True vs Predicted) =====
+    _plot_monotonicity(axes[3, 0], prediction_data.get('ExactGP'), Y_test, 'ExactGP', 'b')
+    _plot_monotonicity(axes[3, 1], prediction_data.get('PairwiseGP'), Y_test, 'PairwiseGP', 'g')
 
     plt.tight_layout()
 
@@ -106,16 +112,30 @@ def plot_experiment_grid(
 
 def _plot_training_loss(ax, losses, model_name, lr, color):
     """Plot training loss curve."""
-    if losses:
+    if losses is not None and len(losses) > 0:
         ax.plot(range(1, len(losses) + 1), losses, f'{color}-', linewidth=1)
         ax.set_xlabel('Iteration')
         ax.set_ylabel('Loss (NLL)')
         ax.set_title(f'{model_name}: Training Loss (LR={lr})')
         ax.grid(True, alpha=0.3)
     else:
-        ax.text(0.5, 0.5, f'No {model_name} loss data',
+        ax.text(0.5, 0.5, f'No {model_name} training loss data',
                 ha='center', va='center', transform=ax.transAxes)
         ax.set_title(f'{model_name}: Training Loss')
+
+
+def _plot_validation_loss(ax, val_losses, model_name, lr, color):
+    """Plot validation loss curve."""
+    if val_losses is not None and len(val_losses) > 0:
+        ax.plot(range(1, len(val_losses) + 1), val_losses, f'{color}-', linewidth=1)
+        ax.set_xlabel('Iteration')
+        ax.set_ylabel('Loss (NLL)')
+        ax.set_title(f'{model_name}: Validation Loss (LR={lr})')
+        ax.grid(True, alpha=0.3)
+    else:
+        ax.text(0.5, 0.5, f'No {model_name} validation loss data',
+                ha='center', va='center', transform=ax.transAxes)
+        ax.set_title(f'{model_name}: Validation Loss')
 
 
 def _plot_function_fit_1d(ax, data, X_test_sorted, Y_test_sorted,
