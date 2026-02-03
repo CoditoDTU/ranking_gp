@@ -6,7 +6,7 @@ Base trainer interface for GP models.
  
 """
 from abc import ABC, abstractmethod
-from typing import Tuple, List, Any
+from typing import Tuple, List, Any, Optional
 import torch
 import numpy as np
 
@@ -19,7 +19,7 @@ class BaseTrainer(ABC):
         kernel_name: str,
         dimension: int,
         training_iters: int,
-        lr: float,
+        lr: float, # this could be OR domai/list[]
         optimizer_name: str,
         device: torch.device,
     ):
@@ -33,6 +33,7 @@ class BaseTrainer(ABC):
         self.model = None
         self.optimizer = None
         self.losses: List[float] = []
+        self.val_losses: List[float] = []
 
     @property
     @abstractmethod 
@@ -47,7 +48,11 @@ class BaseTrainer(ABC):
         y_train: torch.Tensor,
         comparisons: torch.Tensor = None,
         X_train_pairwise: torch.Tensor = None,
-    ) -> List[float]:
+        X_val: Optional[torch.Tensor] = None,
+        y_val: Optional[torch.Tensor] = None,
+        val_comparisons: Optional[torch.Tensor] = None,
+        X_val_pairwise: Optional[torch.Tensor] = None,
+    ) -> Tuple[List[float], List[float]]:
         """
         Train the model.
 
@@ -56,9 +61,14 @@ class BaseTrainer(ABC):
             y_train: Training targets.
             comparisons: Pairwise comparisons (for PairwiseGP).
             X_train_pairwise: Pairwise subset of X_train (for PairwiseGP).
+            X_val: Validation inputs (optional).
+            y_val: Validation targets (optional).
+            val_comparisons: Validation pairwise comparisons (optional, for PairwiseGP).
+            X_val_pairwise: Pairwise subset of X_val (optional, for PairwiseGP).
 
         Returns:
-            List of loss values per iteration.
+            Tuple of (training_losses, validation_losses).
+            validation_losses is empty if no validation data provided.
         """
         pass
 
