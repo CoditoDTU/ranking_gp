@@ -1,0 +1,65 @@
+# ============================================================
+# DATA CONFIGURATION
+# Controls data generation, sampling, and noise
+# ============================================================
+data:
+  fitness_functions:
+    - ackley
+    - gramacy_and_lee
+    - cosines
+    - levy
+    - sphere
+    - sum_of_different_powers
+    - power_sum
+    - zakharov
+    - dixon_price
+    - michalewicz
+
+  dimension: 1
+  n_train: 50
+  n_test: 100
+  val_fraction: 0.2
+
+  # SNR-based noise (replaces g_std)
+  # inf = no noise, 10 = moderate, 1 = high noise
+  snr: 10.0
+
+# ============================================================
+# MODEL CONFIGURATION
+# Controls model architecture and priors
+# ============================================================
+model:
+  kernels:
+    - squared_exponential
+    - matern_5_2
+    - matern_3_2
+    - exponential
+
+  # Expected SNR for model priors (independent from data.snr)
+  snr_model: 10.0
+
+  # Note: Lengthscale is learnable by default
+
+# ============================================================
+# TRAINER CONFIGURATION
+# Controls optimization and training process
+# ============================================================
+trainer:
+  exact_gp:
+    training_iters: 10
+    lr: 0.1
+    optimizer: Adam
+
+  pairwise_gp:
+    training_iters: 15
+    lr: 0.01
+    optimizer: Adam
+
+# ============================================================
+# EXPERIMENT CONFIGURATION
+# Controls experiment execution and output
+# ============================================================
+experiment:
+  seed: 42
+  selection_criterion: val_mll  # Options: val_mll, kendall_tau, spearman
+  output_dir: experiments/
