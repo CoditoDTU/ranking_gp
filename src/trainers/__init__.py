@@ -1,6 +1,17 @@
-"""Trainer classes for GP models."""
-from .base import BaseTrainer
-from .pairwise_gp import PairwiseGPTrainer
-from .exact_gp import ExactGPTrainer
+"""
+Trainer module for GP ranking experiments.
 
-__all__ = ['BaseTrainer', 'PairwiseGPTrainer', 'ExactGPTrainer']
+Provides:
+- BaseTrainer: Abstract base class for trainers
+- ExactGPTrainer: Trainer for ExactGP with noise prior
+- PairwiseGPTrainer: Trainer for PairwiseGP with outputscale prior
+"""
+from .base import BaseTrainer
+from .exact_gp import ExactGPTrainer
+from .pairwise_gp import PairwiseGPTrainer
+
+__all__ = [
+    'BaseTrainer',
+    'ExactGPTrainer',
+    'PairwiseGPTrainer',
+]

@@ -146,7 +146,7 @@ def load_config_with_overrides(config_path: str, overrides: Dict[str, Any] = Non
 
     Args:
         config_path: Path to config YAML file.
-        overrides: Dictionary of CLI overrides.
+        overrides: Dictionary of CLI overrides (from argparse vars()).
 
     Returns:
         Config object with overrides applied.
@@ -156,22 +156,75 @@ def load_config_with_overrides(config_path: str, overrides: Dict[str, Any] = Non
     if overrides is None:
         return config
 
-    # Apply overrides
+    # --- Experiment settings ---
     if overrides.get('seed') is not None:
         config.experiment.seed = overrides['seed']
-
-    if overrides.get('snr') is not None:
-        config.data.snr = float(overrides['snr'])
-
-    if overrides.get('snr_model') is not None:
-        config.model.snr_model = float(overrides['snr_model'])
 
     if overrides.get('output_dir') is not None:
         config.experiment.output_dir = overrides['output_dir']
 
+    if overrides.get('selection_criterion') is not None:
+        config.experiment.selection_criterion = SelectionCriterion(overrides['selection_criterion'])
+
+    # --- Data settings ---
+    if overrides.get('snr') is not None:
+        config.data.snr = float(overrides['snr'])
+
+    if overrides.get('n_train') is not None:
+        config.data.n_train = overrides['n_train']
+
+    if overrides.get('n_test') is not None:
+        config.data.n_test = overrides['n_test']
+
+    if overrides.get('val_fraction') is not None:
+        config.data.val_fraction = overrides['val_fraction']
+
+    if overrides.get('dimension') is not None:
+        config.data.dimension = overrides['dimension']
+
+    if overrides.get('fitness_function') is not None:
+        # Single fitness function overrides the list
+        config.data.fitness_functions = [overrides['fitness_function']]
+
+    # --- Model settings ---
+    if overrides.get('snr_model') is not None:
+        config.model.snr_model = float(overrides['snr_model'])
+
+    if overrides.get('kernel') is not None:
+        # Single kernel overrides the list
+        config.model.kernels = [overrides['kernel']]
+
+    # --- Trainer settings (shared) ---
     if overrides.get('optimizer') is not None:
-        # Apply to both trainers if specified
         config.trainer.exact_gp.optimizer = overrides['optimizer']
         config.trainer.pairwise_gp.optimizer = overrides['optimizer']
+
+    if overrides.get('lr') is not None:
+        config.trainer.exact_gp.lr = overrides['lr']
+        config.trainer.pairwise_gp.lr = overrides['lr']
+
+    if overrides.get('training_iters') is not None:
+        config.trainer.exact_gp.training_iters = overrides['training_iters']
+        config.trainer.pairwise_gp.training_iters = overrides['training_iters']
+
+    # --- ExactGP specific ---
+    if overrides.get('exact_optimizer') is not None:
+        config.trainer.exact_gp.optimizer = overrides['exact_optimizer']
+
+    if overrides.get('exact_lr') is not None:
+        config.trainer.exact_gp.lr = overrides['exact_lr']
+
+    if overrides.get('exact_training_iters') is not None:
+        config.trainer.exact_gp.training_iters = overrides['exact_training_iters']
+
+    # --- PairwiseGP specific ---
+    if overrides.get('pairwise_optimizer') is not None:
+        config.trainer.pairwise_gp.optimizer = overrides['pairwise_optimizer']
+
+    if overrides.get('pairwise_lr') is not None:
+        config.trainer.pairwise_gp.lr = overrides['pairwise_lr']
+
+    if overrides.get('pairwise_training_iters') is not None:
+        config.trainer.pairwise_gp.training_iters = overrides['pairwise_training_iters']
 
     return config

@@ -1,192 +1,199 @@
 """
 PairwiseGP trainer.
-Extracted from module_1.py lines 236-401.
+
+Uses PairwiseGPModel wrapper with outputscale prior.
 """
 import torch
 import numpy as np
-from typing import Tuple, List, Any, Optional
+from typing import Tuple, List
 
 from botorch.models import PairwiseGP
 from botorch.models.pairwise_gp import PairwiseLaplaceMarginalLogLikelihood
 
 from .base import BaseTrainer
-from ..models import build_kernel
+from ..models.pairwise_gp import PairwiseGPModel
+from ..models.kernels import build_kernel
+from ..data.dataset import ExperimentData
+from ..data.comparisons import get_comparisons
 from ..solvers import get_optimizer
-from ..datatools import get_comparisons
 
 
 class PairwiseGPTrainer(BaseTrainer):
-    """Trainer for PairwiseGP models."""
+    """
+    Trainer for PairwiseGP models.
 
-    @property
-    def model_name(self) -> str:
-        return "PairwiseGP"
+    Handles training loop with validation MLL tracking using proxy models.
+    """
 
-    def train(
+    def __init__(
         self,
-        X_train: torch.Tensor,
-        y_train: torch.Tensor,
-        comparisons: torch.Tensor = None,
-        X_train_pairwise: torch.Tensor = None,
-        X_val: Optional[torch.Tensor] = None,
-        y_val: Optional[torch.Tensor] = None,
-        val_comparisons: Optional[torch.Tensor] = None,
-        X_val_pairwise: Optional[torch.Tensor] = None,
-    ) -> Tuple[List[float], List[float]]:
+        model: PairwiseGPModel,
+        training_iters: int,
+        lr: float,
+        optimizer_name: str,
+    ):
+        """
+        Initialize PairwiseGP trainer.
+
+        Args:
+            model: PairwiseGPModel wrapper (must be built before training).
+            training_iters: Number of training iterations.
+            lr: Learning rate.
+            optimizer_name: Name of optimizer.
+        """
+        super().__init__(model, training_iters, lr, optimizer_name)
+        self._mll = None
+
+    def train(self, data: ExperimentData) -> Tuple[List[float], List[float]]:
         """
         Train PairwiseGP model.
 
         Args:
-            X_train: Full training inputs.
-            y_train: Training targets (used for comparison generation if needed).
-            comparisons: Pre-computed pairwise comparisons.
-            X_train_pairwise: Subset of X_train used in the comparisons.
-            X_val: Validation inputs (optional).
-            y_val: Validation targets (optional).
-            val_comparisons: Validation pairwise comparisons (optional).
-            X_val_pairwise: Pairwise subset of X_val (optional).
+            data: ExperimentData with prepared train/val splits and comparisons.
 
         Returns:
-            Tuple of (training_losses, validation_losses).
+            Tuple of (train_losses, val_losses) per iteration.
         """
-        # Build model components
-        kernel = build_kernel(self.kernel_name, self.dimension)
-        self.model = PairwiseGP(
-            X_train_pairwise, comparisons,
-            covar_module=kernel,
-            consolidate_atol=0.0,
-        )
-        mll = PairwiseLaplaceMarginalLogLikelihood(self.model.likelihood, model=self.model)
+        device = self.model.device
 
-        # Move to device
-        self.model.to(self.device)
-        mll.to(self.device)
+        # Setup MLL
+        self._mll = PairwiseLaplaceMarginalLogLikelihood(
+            self.model.model.likelihood, self.model.model
+        )
+        self._mll.to(device)
 
         # Setup optimizer
-        self.optimizer = get_optimizer(self.optimizer_name, self.model.parameters(), self.lr)
+        self.optimizer = get_optimizer(
+            self.optimizer_name,
+            self.model.model.parameters(),
+            self.lr
+        )
 
-        # Setup validation proxy model (created once, reused each iteration)
-        self.val_losses = []
-        has_val = X_val_pairwise is not None and val_comparisons is not None
-        if has_val:
-            val_kernel = build_kernel(self.kernel_name, self.dimension)
-            val_proxy = PairwiseGP(
-                X_val_pairwise, val_comparisons,
-                covar_module=val_kernel,
-                consolidate_atol=0.0,
-            ).double()
-            val_proxy.to(self.device)
-            val_mll = PairwiseLaplaceMarginalLogLikelihood(val_proxy.likelihood, val_proxy)
+        # Setup validation proxy model
+        val_kernel = build_kernel(self.model.kernel_name, self.model.dimension)
+        val_proxy = PairwiseGP(
+            data.X_val_pairwise.to(device, dtype=torch.float64),
+            data.comparisons_val.to(device),
+            covar_module=val_kernel,
+            consolidate_atol=0.0,
+        ).double()
+        val_proxy.to(device)
+        val_mll = PairwiseLaplaceMarginalLogLikelihood(val_proxy.likelihood, val_proxy)
 
         # Training loop
-        self.model.train()
+        self.model.model.train()
         self.losses = []
+        self.val_losses = []
 
         for i in range(self.training_iters):
             if "bfgs" in self.optimizer_name.lower():
                 def closure():
                     self.optimizer.zero_grad(set_to_none=True)
-                    output = self.model(self.model.datapoints)
-                    loss = -mll(output, self.model.train_targets)
+                    output = self.model.model(self.model.model.datapoints)
+                    loss = -self._mll(output, self.model.model.train_targets)
                     loss.backward()
                     return loss
                 loss = self.optimizer.step(closure)
             else:
                 self.optimizer.zero_grad()
-                output = self.model(self.model.datapoints)
-                loss = -mll(output, self.model.train_targets)
+                output = self.model.model(self.model.model.datapoints)
+                loss = -self._mll(output, self.model.model.train_targets)
                 loss.backward()
                 self.optimizer.step()
 
             self.losses.append(loss.item())
 
-            # Compute validation NLL with current hyperparameters
-            if has_val:
-                val_proxy.covar_module.load_state_dict(
-                    self.model.covar_module.state_dict()
-                )
-                val_proxy.train()
-                with torch.no_grad():
-                    val_output = val_proxy(val_proxy.datapoints)
-                    val_loss = -val_mll(val_output, val_proxy.train_targets).item()
-                self.val_losses.append(val_loss)
+            # Compute validation MLL with current hyperparameters
+            # Use strict=False to ignore prior parameters that don't exist in val_proxy
+            val_proxy.covar_module.load_state_dict(
+                self.model.model.covar_module.state_dict(), strict=False
+            )
+            val_proxy.train()
+            with torch.no_grad():
+                val_output = val_proxy(val_proxy.datapoints)
+                val_loss = val_mll(val_output, val_proxy.train_targets).item()
+            self.val_losses.append(val_loss)
 
             if (i + 1) % 20 == 0:
-                try:
-                    ls = self.model.covar_module.base_kernel.lengthscale.item()
-                    print(f"  Iter {i+1} - Loss: {loss.item():.4f} - Lengthscale: {ls:.3f}")
-                except AttributeError:
-                    print(f"  Iter {i+1} - Loss: {loss.item():.4f}")
+                ls = self.model.get_lengthscale()
+                print(f"  Iter {i+1} - Loss: {loss.item():.4f} - Lengthscale: {ls:.3f}")
 
         # Cleanup validation proxy
-        if has_val:
-            del val_proxy, val_mll, val_kernel
-
-        # Store mll for later use
-        self._mll = mll
+        del val_proxy, val_mll, val_kernel
 
         return self.losses, self.val_losses
 
-    def predict(self, X: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
-        """Make predictions with trained model."""
-        self.model.eval()
-        with torch.no_grad():
-            posterior = self.model.posterior(X.to(self.device))
-            mean = posterior.mean.squeeze().cpu().numpy()
-            variance = posterior.variance.squeeze().detach().cpu().numpy()
-        return mean, variance
-
-    def compute_nll(
+    def compute_mll(
         self,
-        X_test: torch.Tensor,
-        y_test: torch.Tensor,
+        X: torch.Tensor,
+        y: torch.Tensor,
         comparisons: torch.Tensor = None,
+        X_pairwise: torch.Tensor = None,
     ) -> float:
         """
-        Compute test NLL using a proxy model approach.
+        Compute MLL on given data using proxy model.
 
         Creates a proxy PairwiseGP with test data structure and copies
         the learned hyperparameters from the trained model.
+
+        Args:
+            X: Full input tensor (used if comparisons not provided).
+            y: Target tensor (used if comparisons not provided).
+            comparisons: Pre-computed comparisons (optional).
+            X_pairwise: Pre-computed pairwise X (optional).
+
+        Returns:
+            MLL value (higher is better).
         """
-        # Create test comparisons from true test labels
-        test_comparisons = get_comparisons(y_test)
+        device = self.model.device
+
+        # Generate comparisons if not provided
+        if comparisons is None:
+            comparisons, X_pairwise = get_comparisons(y, X=X)
 
         # Create proxy model with test data structure
-        proxy_kernel = build_kernel(self.kernel_name, self.dimension)
+        proxy_kernel = build_kernel(self.model.kernel_name, self.model.dimension)
         model_proxy = PairwiseGP(
-            X_test, test_comparisons,
+            X_pairwise.to(device, dtype=torch.float64),
+            comparisons.to(device),
             covar_module=proxy_kernel,
             consolidate_atol=0.0,
         ).double()
+        model_proxy.to(device)
 
         # Copy learned hyperparameters from trained model
-        model_proxy.covar_module.load_state_dict(self.model.covar_module.state_dict())
+        # Use strict=False to ignore prior parameters
+        model_proxy.covar_module.load_state_dict(
+            self.model.model.covar_module.state_dict(), strict=False
+        )
         mll_proxy = PairwiseLaplaceMarginalLogLikelihood(model_proxy.likelihood, model_proxy)
 
-        # Evaluate NLL in train mode
+        # Evaluate MLL in train mode
         model_proxy.train()
         with torch.no_grad():
             output = model_proxy(model_proxy.datapoints)
-            nll = -mll_proxy(output, model_proxy.train_targets).item()
+            mll = mll_proxy(output, model_proxy.train_targets).item()
 
         # Cleanup proxy model
         del model_proxy, mll_proxy, proxy_kernel
 
-        return nll
+        return mll
 
-    def get_lengthscale(self) -> Any:
-        """Extract lengthscale from trained model."""
-        try:
-            ls_tensor = self.model.covar_module.base_kernel.lengthscale
-            ls = ls_tensor.detach().cpu().numpy().flatten()
-            if ls.size == 1:
-                return ls.item()
-            return str(ls.tolist())
-        except AttributeError:
-            return np.nan
+    def predict(self, X: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
+        """Make predictions with trained model."""
+        return self.model.predict(X)
+
+    def get_lengthscale(self) -> float:
+        """Get learned lengthscale."""
+        return self.model.get_lengthscale()
+
+    def get_noise_variance(self) -> float:
+        """Get noise variance (NaN for PairwiseGP)."""
+        return self.model.get_noise_variance()
 
     def cleanup(self):
         """Release PairwiseGP-specific resources."""
-        if hasattr(self, '_mll'):
+        if self._mll is not None:
             del self._mll
+            self._mll = None
         super().cleanup()

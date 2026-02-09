@@ -22,7 +22,7 @@ data:
 
   # SNR-based noise (replaces g_std)
   # inf = no noise, 10 = moderate, 1 = high noise
-  snr: 10.0
+  snr: 100.0
 
 # ============================================================
 # MODEL CONFIGURATION
@@ -46,12 +46,12 @@ model:
 # ============================================================
 trainer:
   exact_gp:
-    training_iters: 10
+    training_iters: 400
     lr: 0.1
     optimizer: Adam
 
   pairwise_gp:
-    training_iters: 15
+    training_iters: 3000
     lr: 0.01
     optimizer: Adam
 

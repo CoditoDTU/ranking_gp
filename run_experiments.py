@@ -2,27 +2,33 @@
 """
 Main experiment runner for GP ranking experiments.
 
-This script orchestrates the experiment but does NOT define utility functions.
-All logic is imported from src/ modules.
+Uses the refactored module structure:
+- src/data: ExperimentData for data handling
+- src/models: ExactGPModel, PairwiseGPModel wrappers
+- src/trainers: ExactGPTrainer, PairwiseGPTrainer
+- src/results: ResultsCollector, ModelResult
+- src/config: Config dataclasses and CLI parser
 
 Usage:
-    python run_experiments.py --config config.yaml
-    python run_experiments.py --seed 42 --noise_type gaussian
+    python run_experiments.py --config config_new.yaml
+    python run_experiments.py --config config_new.yaml --seed 42 --snr 10.0
+    python run_experiments.py --seed 42 --snr 20 --optimizer Adam --quiet
 """
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
 import warnings
-import random
 import torch
 import numpy as np
+from pathlib import Path
+from datetime import datetime
 from scipy.stats import kendalltau, spearmanr
-from src.config import create_experiment_parser, create_experiment_config
-from src.experiment import ExperimentManager, ResultsCollector, TrainingResult, ProgressTracker
-from src.trainers import PairwiseGPTrainer, ExactGPTrainer
-from src.fitness_functions import fitness_function
-from src.datatools import get_comparisons
-from src.noise import add_noise
+
+from src.config import create_experiment_parser, load_config_with_overrides
+from src.data import ExperimentData
+from src.models import ExactGPModel, PairwiseGPModel
+from src.trainers import ExactGPTrainer, PairwiseGPTrainer
+from src.results import ResultsCollector, ModelResult, FailureRecord
 
 
 def main():
@@ -31,308 +37,319 @@ def main():
     # --- Parse arguments and load config ---
     parser = create_experiment_parser()
     args = parser.parse_args()
-    config = create_experiment_config(args.config, vars(args))
+
+    # Load config with CLI overrides
+    config = load_config_with_overrides(args.config, vars(args))
 
     # --- Set seeds ---
-    random.seed(config.seed)
-    np.random.seed(config.seed)
-    torch.manual_seed(config.seed)
+    np.random.seed(config.experiment.seed)
+    torch.manual_seed(config.experiment.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    if not args.quiet:
+        print(f"Using device: {device}")
+        print(f"Seed: {config.experiment.seed}")
+        print(f"Data SNR: {config.data.snr}")
+        print(f"Model SNR: {config.model.snr_model}")
 
-    # --- Setup experiment directory and logging ---
-    exp_manager = ExperimentManager(quiet=args.quiet)
-    output_dir = exp_manager.setup()
-    results = ResultsCollector(output_dir, exp_manager.experiment_id)
+    # --- Setup output directory ---
+    # If output_dir was explicitly set via CLI, use it directly (for grid search)
+    # Otherwise, create a timestamped subfolder
+    if args.output_dir is not None:
+        output_dir = Path(args.output_dir)
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = Path(config.experiment.output_dir) / f"exp_{timestamp}"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save config at start for reproducibility
-    results.save_config(config)
+    # --- Setup results collector ---
+    collector = ResultsCollector(output_dir, criterion=config.experiment.selection_criterion)
 
-    # --- Setup progress tracking ---
-    noise_types_list = ['none'] if not config.noise else config.noise_types
-    total_experiments = (
-        len(config.fitness_functions) *
-        len(noise_types_list) *
-        len(config.kernel_names) *
-        2  # PairwiseGP + ExactGP
+    # --- Count total experiments ---
+    total = (
+        len(config.data.fitness_functions) *
+        len(config.model.kernels) *
+        2  # ExactGP + PairwiseGP
     )
-    progress = ProgressTracker(total=total_experiments, quiet=args.quiet)
-    progress.start()
+    current = 0
 
     # --- Main experiment loop ---
-    for fn_name in config.fitness_functions:
-        progress.write(f"\n{'='*40}")
-        progress.write(f"Fitness Function: {fn_name}")
-        progress.write(f"{'='*40}")
+    for fn_name in config.data.fitness_functions:
+        if not args.quiet:
+            print(f"\n{'='*50}")
+            print(f"Fitness Function: {fn_name}")
+            print(f"{'='*50}")
 
-        fitness_fn = fitness_function(base_fn_name=fn_name, dimension=config.dimension)
+        # Prepare data using ExperimentData
+        data = ExperimentData(
+            fitness_fn_name=fn_name,
+            dimension=config.data.dimension,
+            n_train=config.data.n_train,
+            n_test=config.data.n_test,
+            val_fraction=config.data.val_fraction,
+            snr=config.data.snr,
+            seed=config.experiment.seed,
+        )
+        data.prepare()
 
-        # Generate all data per fitness function: sample N points and get true labels
-        n_total = config.nsamples + config.n_test_points
-        X_all = fitness_fn.sample_uniform(n_total, seed=config.seed)
-        Y_all_true = torch.Tensor(fitness_fn.output(X_all))
+        for kernel_name in config.model.kernels:
+            # ========== ExactGP ==========
+            current += 1
+            if not args.quiet:
+                print(f"\n[{current}/{total}] ExactGP - {kernel_name}")
 
-        # Split into training and testing
-        X_train = X_all[:config.nsamples]
-        X_test = X_all[config.nsamples:]
-        X_train_tensor = torch.tensor(X_train, dtype=torch.float64)
-        X_test_tensor = torch.tensor(X_test, dtype=torch.float64)
+            result = train_exactgp(
+                data=data,
+                kernel_name=kernel_name,
+                config=config,
+                device=device,
+                fn_name=fn_name,
+                collector=collector,
+            )
+            if result is not None:
+                collector.add_result(result)
 
-        Y_train_all = Y_all_true[:config.nsamples]
-        Y_test_true = Y_all_true[config.nsamples:]
+            # ========== PairwiseGP ==========
+            current += 1
+            if not args.quiet:
+                print(f"\n[{current}/{total}] PairwiseGP - {kernel_name}")
 
-        # --- Validation split ---
-        has_val = config.val_fraction > 0.0
-        if has_val:
-            n_val = int(config.nsamples * config.val_fraction)
-            n_train_reduced = config.nsamples - n_val
-            perm = np.random.permutation(config.nsamples)
-            train_idx = perm[:n_train_reduced]
-            val_idx = perm[n_train_reduced:]
-
-            X_train_reduced = X_train[train_idx]
-            X_val = X_train[val_idx]
-            X_train_reduced_tensor = torch.tensor(X_train_reduced, dtype=torch.float64)
-            X_val_tensor = torch.tensor(X_val, dtype=torch.float64)
-
-            Y_train = Y_train_all[train_idx]
-            Y_val_true = Y_train_all[val_idx]
-        else:
-            X_train_reduced = X_train
-            X_train_reduced_tensor = X_train_tensor
-            X_val = None
-            X_val_tensor = None
-            Y_train = Y_train_all
-            Y_val_true = None
-
-        noise_iterator = ['none'] if not config.noise else config.noise_types
-
-        for noise_type in noise_iterator:
-
-            if not config.noise:
-                comparisons, X_train_pairwise = get_comparisons(Y_train, X=X_train_reduced_tensor)
-                noise_level = 0.0
-                noise_type = 'none'
-                Y_noisy = None
-                Y_test = Y_test_true
-                Y_val = Y_val_true if has_val else None
-
-                if has_val:
-                    val_comparisons, X_val_pairwise = get_comparisons(Y_val_true, X=X_val_tensor)
-                else:
-                    val_comparisons, X_val_pairwise = None, None
-            else:
-                # Noise all labels, then subset into train/test/val
-                noise_level = config.noise_params.g_std
-                Y_all_noisy = add_noise(
-                    Y_all_true, noise_type=noise_type,
-                    noise_params={'g_std': config.noise_params.g_std,
-                                  'h_std': config.noise_params.h_std,
-                                  'amplitude_factor': config.noise_params.amplitude_factor},
-                )
-                Y_noisy_train_all = Y_all_noisy[:config.nsamples]
-                Y_noisy_test = Y_all_noisy[config.nsamples:]
-
-                if has_val:
-                    Y_noisy_train = Y_noisy_train_all[train_idx]
-                    Y_noisy_val = Y_noisy_train_all[val_idx]
-                else:
-                    Y_noisy_train = Y_noisy_train_all
-                    Y_noisy_val = None
-
-                Y_noisy = Y_noisy_train
-                Y_test = Y_noisy_test
-                Y_val = Y_noisy_val if has_val else None
-                comparisons, X_train_pairwise = get_comparisons(Y_noisy_train, X=X_train_reduced_tensor)
-
-                if has_val:
-                    val_comparisons, X_val_pairwise = get_comparisons(Y_noisy_val, X=X_val_tensor)
-                else:
-                    val_comparisons, X_val_pairwise = None, None
-
-            for kernel_name in config.kernel_names:
-                # Build data dicts for results storage
-                if not config.noise:
-                    df_train_data = {
-                        'fold': 0,
-                        'X': X_train_reduced.flatten() if config.dimension == 1 else X_train_reduced.tolist(),
-                        'y_true': Y_train.flatten().numpy(),
-                    }
-                    df_test_data = {
-                        'fold': 1,
-                        'X': X_test.flatten() if config.dimension == 1 else X_test.tolist(),
-                        'y_true': Y_test_true.flatten().numpy(),
-                    }
-                else:
-                    df_train_data = {
-                        'fold': 0,
-                        'X': X_train_reduced.flatten() if config.dimension == 1 else X_train_reduced.tolist(),
-                        'y_true': Y_train.flatten().numpy(),
-                        'y_noisy': Y_noisy_train.flatten().numpy(),
-                    }
-                    df_test_data = {
-                        'fold': 1,
-                        'X': X_test.flatten() if config.dimension == 1 else X_test.tolist(),
-                        'y_true': Y_test_true.flatten().numpy(),
-                        'y_noisy': Y_noisy_test.flatten().numpy(),
-                    }
-
-                # Build validation data dict
-                df_val_data = None
-                if has_val:
-                    if not config.noise:
-                        df_val_data = {
-                            'fold': 2,
-                            'X': X_val.flatten() if config.dimension == 1 else X_val.tolist(),
-                            'y_true': Y_val_true.flatten().numpy(),
-                        }
-                    else:
-                        df_val_data = {
-                            'fold': 2,
-                            'X': X_val.flatten() if config.dimension == 1 else X_val.tolist(),
-                            'y_true': Y_val_true.flatten().numpy(),
-                            'y_noisy': Y_noisy_val.flatten().numpy(),
-                        }
-
-                # ========== PairwiseGP ==========
-                progress.set_status(f"{fn_name}/{kernel_name}/PairwiseGP")
-                _train_and_record(
-                    PairwiseGPTrainer, config.pairwise_gp, kernel_name, config.dimension,
-                    device, X_train_reduced_tensor, Y_train, X_test_tensor, Y_test,
-                    comparisons, X_train_pairwise, X_train_reduced, X_test,
-                    fn_name, noise_type, noise_level, config.seed,
-                    results, df_train_data, df_test_data,
-                    X_val_tensor=X_val_tensor, Y_val=Y_val,
-                    val_comparisons=val_comparisons, X_val_pairwise=X_val_pairwise,
-                    X_val_np=X_val, df_val_data=df_val_data,
-                )
-                progress.update()
-
-                # ========== ExactGP ==========
-                progress.set_status(f"{fn_name}/{kernel_name}/ExactGP")
-                Y_train_exact = Y_noisy if config.noise else Y_train
-                _train_and_record(
-                    ExactGPTrainer, config.exact_gp, kernel_name, config.dimension,
-                    device, X_train_reduced_tensor, Y_train_exact, X_test_tensor, Y_test,
-                    comparisons, X_train_pairwise, X_train_reduced, X_test,
-                    fn_name, noise_type, noise_level, config.seed,
-                    results, df_train_data, df_test_data,
-                    X_val_tensor=X_val_tensor, Y_val=Y_val,
-                    val_comparisons=val_comparisons, X_val_pairwise=X_val_pairwise,
-                    X_val_np=X_val, df_val_data=df_val_data,
-                )
-                progress.update()
-
-    progress.finish()
+            result = train_pairwisegp(
+                data=data,
+                kernel_name=kernel_name,
+                config=config,
+                device=device,
+                fn_name=fn_name,
+                collector=collector,
+            )
+            if result is not None:
+                collector.add_result(result)
 
     # --- Save results ---
-    print("\n--- Saving Merged Predictions ---")
-    results.save_predictions()
-    results.save_losses()
-    if config.val_fraction > 0.0:
-        results.save_val_losses()
-    results.save_summary()
-    results.save_aggregate(exp_manager.base_dir, config.clear_aggregate)
+    if not args.quiet:
+        print(f"\n{'='*50}")
+        print("Saving results...")
 
-    print(f"\n--- Experiment Complete (elapsed: {progress.elapsed_str}) ---")
-    print("To generate plots, run: python run_visualization.py")
+    collector.save()
 
-    # Print completion message to terminal (even in quiet mode)
-    if args.quiet:
-        import sys
-        sys.stdout = sys.stdout.terminal  # Restore terminal output
-        print(f"Experiment {exp_manager.experiment_id} complete in {progress.elapsed_str}. Results in: {output_dir}")
+    print(f"\nExperiment complete. Results saved to: {output_dir}")
 
 
-def _train_and_record(
-    trainer_class, gp_settings, kernel_name, dimension, device,
-    X_train_tensor, Y_train, X_test_tensor, Y_test,
-    comparisons, X_train_pairwise, X_train_np, X_test_np,
-    fn_name, noise_type, noise_level, seed,
-    results, df_train_data, df_test_data,
-    X_val_tensor=None, Y_val=None, val_comparisons=None, X_val_pairwise=None,
-    X_val_np=None, df_val_data=None,
-):
-    """Train a GP model and record results."""
-    trainer = trainer_class(
-        kernel_name=kernel_name,
-        dimension=dimension,
-        training_iters=gp_settings.training_iters,
-        lr=gp_settings.lr,
-        optimizer_name=gp_settings.optimizer,
-        device=device,
-    )
-
+def train_exactgp(data, kernel_name, config, device, fn_name, collector):
+    """Train ExactGP model and return ModelResult."""
     try:
-        print(f"Training {trainer.model_name}...")
+        # Build model
+        model = ExactGPModel(
+            kernel_name=kernel_name,
+            dimension=config.data.dimension,
+            snr_model=config.model.snr_model,
+            signal_variance=data.signal_variance,
+            device=device,
+        )
+        model.build(
+            X_train=data.X_train,
+            y_train=data.Y_train_noisy,
+        )
+
+        # Create trainer
+        trainer = ExactGPTrainer(
+            model=model,
+            training_iters=config.trainer.exact_gp.training_iters,
+            lr=config.trainer.exact_gp.lr,
+            optimizer_name=config.trainer.exact_gp.optimizer,
+        )
 
         # Train
-        losses, val_losses = trainer.train(
-            X_train_tensor, Y_train, comparisons, X_train_pairwise,
-            X_val=X_val_tensor, y_val=Y_val,
-            val_comparisons=val_comparisons, X_val_pairwise=X_val_pairwise,
-        )
+        train_losses, val_losses = trainer.train(data)
 
-        # Predict
-        y_pred_train, var_train = trainer.predict(X_train_tensor)
-        y_pred_test, var_test = trainer.predict(X_test_tensor)
+        # Compute metrics
+        train_mll = trainer.compute_mll(data.X_train, data.Y_train_noisy)
+        val_mll = trainer.compute_mll(data.X_val, data.Y_val_noisy)
+        test_mll = trainer.compute_mll(data.X_test, data.Y_test_noisy)
 
-        # Predict on validation set
-        if X_val_tensor is not None:
-            y_pred_val, var_val = trainer.predict(X_val_tensor)
-            val_nll = trainer.compute_nll(X_val_tensor, Y_val, val_comparisons)
-        else:
-            y_pred_val, var_val, val_nll = None, None, None
+        # Predictions
+        y_pred_train, var_train = trainer.predict(data.X_train)
+        y_pred_val, var_val = trainer.predict(data.X_val)
+        y_pred_test, var_test = trainer.predict(data.X_test)
 
-        # Train NLL is the last training loss
-        train_nll = losses[-1]
+        # Ranking metrics (on test set with true values)
+        tau, _ = kendalltau(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
+        spearman, _ = spearmanr(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
 
-        # Compute test NLL
-        test_nll = trainer.compute_nll(X_test_tensor, Y_test, comparisons)
-
-        # Compute ranking metrics
-        tau, _ = kendalltau(Y_test.numpy().flatten(), y_pred_test.flatten())
-        spearman, _ = spearmanr(Y_test.numpy().flatten(), y_pred_test.flatten())
-
-        result = TrainingResult(
-            model_name=trainer.model_name,
-            fn_name=fn_name,
+        result = ModelResult(
+            gp_type="ExactGP",
+            fitness_fn=fn_name,
             kernel_name=kernel_name,
-            noise_type=noise_type,
-            dimension=dimension,
-            seed=seed,
-            noise_level=noise_level,
-            y_pred_train=y_pred_train,
-            y_pred_test=y_pred_test,
-            variance_train=var_train,
-            variance_test=var_test,
-            train_nll=train_nll,
-            test_nll=test_nll,
+            seed=config.experiment.seed,
+            snr_data=config.data.snr,
+            snr_model=config.model.snr_model,
+            optimizer=config.trainer.exact_gp.optimizer,
+            lr=config.trainer.exact_gp.lr,
+            training_iters=config.trainer.exact_gp.training_iters,
+            signal_variance=data.signal_variance,
+            noise_variance_data=data.noise_variance,
+            noise_variance_model=trainer.get_noise_variance(),
+            lengthscale=trainer.get_lengthscale(),
+            train_mll=train_mll,
+            val_mll=val_mll,
+            test_mll=test_mll,
             kendall_tau=tau,
             spearman=spearman,
-            lengthscale=trainer.get_lengthscale(),
-            losses=losses,
-            X_train=X_train_np.copy(),
-            Y_train=Y_train.numpy().copy(),
-            X_test=X_test_np.copy(),
-            Y_test=Y_test.numpy().copy(),
-            y_pred_val=y_pred_val,
-            variance_val=var_val,
-            val_nll=val_nll,
+            train_losses=train_losses,
             val_losses=val_losses,
-            X_val=X_val_np.copy() if X_val_np is not None else None,
-            Y_val=Y_val.numpy().copy() if Y_val is not None else None,
+            y_pred_train=y_pred_train,
+            y_pred_val=y_pred_val,
+            y_pred_test=y_pred_test,
+            var_train=var_train,
+            var_val=var_val,
+            var_test=var_test,
+            # Data fields for predictions.csv
+            X_train=data.X_train.numpy(),
+            X_val=data.X_val.numpy(),
+            X_test=data.X_test.numpy(),
+            y_true_train=data.Y_train_true.numpy(),
+            y_true_val=data.Y_val_true.numpy(),
+            y_true_test=data.Y_test_true.numpy(),
+            y_noisy_train=data.Y_train_noisy.numpy(),
+            y_noisy_val=data.Y_val_noisy.numpy(),
+            y_noisy_test=data.Y_test_noisy.numpy(),
         )
 
-        results.add_result(result, df_train_data, df_test_data, df_val_data)
+        trainer.cleanup()
+        return result
 
     except Exception as e:
-        print(f"ERROR training {trainer.model_name} with {kernel_name}: {e}")
+        print(f"ERROR training ExactGP with {kernel_name}: {e}")
         import traceback
         traceback.print_exc()
-    finally:
+
+        # Log failure
+        failure = FailureRecord(
+            gp_type="ExactGP",
+            fitness_fn=fn_name,
+            kernel_name=kernel_name,
+            seed=config.experiment.seed,
+            snr_data=config.data.snr,
+            snr_model=config.model.snr_model,
+            error_type=type(e).__name__,
+            error_message=str(e)[:500],
+        )
+        collector.add_failure(failure)
+        return None
+
+
+def train_pairwisegp(data, kernel_name, config, device, fn_name, collector):
+    """Train PairwiseGP model and return ModelResult."""
+    try:
+        # Build model
+        model = PairwiseGPModel(
+            kernel_name=kernel_name,
+            dimension=config.data.dimension,
+            snr_model=config.model.snr_model,
+            signal_variance=data.signal_variance,
+            device=device,
+        )
+        model.build(
+            X_train=data.X_train,
+            y_train=data.Y_train_noisy,
+            comparisons=data.comparisons_train,
+            X_pairwise=data.X_train_pairwise,
+        )
+
+        # Create trainer
+        trainer = PairwiseGPTrainer(
+            model=model,
+            training_iters=config.trainer.pairwise_gp.training_iters,
+            lr=config.trainer.pairwise_gp.lr,
+            optimizer_name=config.trainer.pairwise_gp.optimizer,
+        )
+
+        # Train
+        train_losses, val_losses = trainer.train(data)
+
+        # Compute metrics
+        train_mll = trainer.compute_mll(
+            data.X_train, data.Y_train_noisy,
+            comparisons=data.comparisons_train,
+            X_pairwise=data.X_train_pairwise,
+        )
+        val_mll = trainer.compute_mll(
+            data.X_val, data.Y_val_noisy,
+            comparisons=data.comparisons_val,
+            X_pairwise=data.X_val_pairwise,
+        )
+        # For test, generate comparisons from true values
+        test_mll = trainer.compute_mll(data.X_test, data.Y_test_true)
+
+        # Predictions
+        y_pred_train, var_train = trainer.predict(data.X_train)
+        y_pred_val, var_val = trainer.predict(data.X_val)
+        y_pred_test, var_test = trainer.predict(data.X_test)
+
+        # Ranking metrics (on test set with true values)
+        tau, _ = kendalltau(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
+        spearman, _ = spearmanr(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
+
+        result = ModelResult(
+            gp_type="PairwiseGP",
+            fitness_fn=fn_name,
+            kernel_name=kernel_name,
+            seed=config.experiment.seed,
+            snr_data=config.data.snr,
+            snr_model=config.model.snr_model,
+            optimizer=config.trainer.pairwise_gp.optimizer,
+            lr=config.trainer.pairwise_gp.lr,
+            training_iters=config.trainer.pairwise_gp.training_iters,
+            signal_variance=data.signal_variance,
+            noise_variance_data=data.noise_variance,
+            noise_variance_model=np.nan,  # PairwiseGP has no explicit noise
+            lengthscale=trainer.get_lengthscale(),
+            train_mll=train_mll,
+            val_mll=val_mll,
+            test_mll=test_mll,
+            kendall_tau=tau,
+            spearman=spearman,
+            train_losses=train_losses,
+            val_losses=val_losses,
+            y_pred_train=y_pred_train,
+            y_pred_val=y_pred_val,
+            y_pred_test=y_pred_test,
+            var_train=var_train,
+            var_val=var_val,
+            var_test=var_test,
+            # Data fields for predictions.csv
+            X_train=data.X_train.numpy(),
+            X_val=data.X_val.numpy(),
+            X_test=data.X_test.numpy(),
+            y_true_train=data.Y_train_true.numpy(),
+            y_true_val=data.Y_val_true.numpy(),
+            y_true_test=data.Y_test_true.numpy(),
+            y_noisy_train=data.Y_train_noisy.numpy(),
+            y_noisy_val=data.Y_val_noisy.numpy(),
+            y_noisy_test=data.Y_test_noisy.numpy(),
+        )
+
         trainer.cleanup()
+        return result
+
+    except Exception as e:
+        print(f"ERROR training PairwiseGP with {kernel_name}: {e}")
+        import traceback
+        traceback.print_exc()
+
+        # Log failure
+        failure = FailureRecord(
+            gp_type="PairwiseGP",
+            fitness_fn=fn_name,
+            kernel_name=kernel_name,
+            seed=config.experiment.seed,
+            snr_data=config.data.snr,
+            snr_model=config.model.snr_model,
+            error_type=type(e).__name__,
+            error_message=str(e)[:500],
+        )
+        collector.add_failure(failure)
+        return None
 
 
 if __name__ == "__main__":

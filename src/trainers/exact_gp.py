@@ -1,181 +1,164 @@
 """
 ExactGP trainer.
-Extracted from module_1.py lines 403-555.
+
+Uses ExactGPModel wrapper with GammaPrior on noise.
 """
 import torch
 import gpytorch
 import numpy as np
-from typing import Tuple, List, Any, Optional
-
-from gpytorch.likelihoods import GaussianLikelihood
+from typing import Tuple, List
 
 from .base import BaseTrainer
-from ..models import FlexibleExactGPModel, build_kernel
+from ..models.exact_gp import ExactGPModel
+from ..data.dataset import ExperimentData
 from ..solvers import get_optimizer
 
 
 class ExactGPTrainer(BaseTrainer):
-    """Trainer for ExactGP models."""
+    """
+    Trainer for ExactGP models.
 
-    @property
-    def model_name(self) -> str:
-        return "ExactGP"
+    Handles training loop with validation MLL tracking.
+    """
 
-    def train(
+    def __init__(
         self,
-        X_train: torch.Tensor,
-        y_train: torch.Tensor,
-        comparisons: torch.Tensor = None,
-        X_train_pairwise: torch.Tensor = None,
-        X_val: Optional[torch.Tensor] = None,
-        y_val: Optional[torch.Tensor] = None,
-        val_comparisons: Optional[torch.Tensor] = None,
-        X_val_pairwise: Optional[torch.Tensor] = None,
-    ) -> Tuple[List[float], List[float]]:
+        model: ExactGPModel,
+        training_iters: int,
+        lr: float,
+        optimizer_name: str,
+    ):
+        """
+        Initialize ExactGP trainer.
+
+        Args:
+            model: ExactGPModel wrapper (must be built before training).
+            training_iters: Number of training iterations.
+            lr: Learning rate.
+            optimizer_name: Name of optimizer.
+        """
+        super().__init__(model, training_iters, lr, optimizer_name)
+        self._mll = None
+
+    def train(self, data: ExperimentData) -> Tuple[List[float], List[float]]:
         """
         Train ExactGP model.
 
         Args:
-            X_train: Training inputs.
-            y_train: Training targets.
-            comparisons: Ignored (interface compatibility).
-            X_train_pairwise: Ignored (interface compatibility).
-            X_val: Validation inputs (optional).
-            y_val: Validation targets (optional).
-            val_comparisons: Ignored (interface compatibility).
-            X_val_pairwise: Ignored (interface compatibility).
+            data: ExperimentData with prepared train/val splits.
 
         Returns:
-            Tuple of (training_losses, validation_losses).
+            Tuple of (train_losses, val_losses) per iteration.
         """
-        # Prepare data on device
-        X = X_train.to(self.device, dtype=torch.double)
-        y = y_train.to(self.device, dtype=torch.double).squeeze(-1)
+        device = self.model.device
 
-        # Build model components
-        self.likelihood = GaussianLikelihood().to(self.device, dtype=torch.double)
-        kernel = build_kernel(self.kernel_name, self.dimension)
-        self.model = FlexibleExactGPModel(X, y, self.likelihood, kernel)
-        self.model.to(self.device, dtype=torch.double)
+        # Get data tensors
+        X_train = data.X_train.to(device, dtype=torch.float64)
+        y_train = data.Y_train_noisy.to(device, dtype=torch.float64).squeeze(-1)
+        X_val = data.X_val.to(device, dtype=torch.float64)
+        y_val = data.Y_val_noisy.to(device, dtype=torch.float64).squeeze(-1)
 
-        mll = gpytorch.mlls.ExactMarginalLogLikelihood(self.likelihood, self.model)
-        mll.to(self.device, dtype=torch.double)
+        # Setup MLL
+        self._mll = gpytorch.mlls.ExactMarginalLogLikelihood(
+            self.model.likelihood, self.model.model
+        )
+        self._mll.to(device, dtype=torch.float64)
 
         # Setup optimizer
-        self.optimizer = get_optimizer(self.optimizer_name, self.model.parameters(), self.lr)
-
-        # Prepare validation data
-        self.val_losses = []
-        has_val = X_val is not None and y_val is not None
-        if has_val:
-            X_val_device = X_val.to(self.device, dtype=torch.double)
-            y_val_device = y_val.to(self.device, dtype=torch.double).squeeze(-1)
+        self.optimizer = get_optimizer(
+            self.optimizer_name,
+            self.model.model.parameters(),
+            self.lr
+        )
 
         # Training loop
-        self.model.train()
-        self.likelihood.train()
+        self.model.model.train()
+        self.model.likelihood.train()
         self.losses = []
-
-        # Store training data references for later NLL computation
-        self._X_train = X
-        self._y_train = y
-        self._mll = mll
+        self.val_losses = []
 
         for i in range(self.training_iters):
             if "bfgs" in self.optimizer_name.lower():
                 def closure():
                     self.optimizer.zero_grad(set_to_none=True)
-                    output = self.model(X)
-                    loss = -mll(output, y).sum()
+                    output = self.model.model(X_train)
+                    loss = -self._mll(output, y_train).sum()
                     loss.backward()
                     return loss
                 loss = self.optimizer.step(closure)
-                self.optimizer.step(closure)  # Double step as in original
+                self.optimizer.step(closure)  # Double step for BFGS
             else:
                 self.optimizer.zero_grad()
-                output = self.model(X)
-                loss = -mll(output, y).sum()
+                output = self.model.model(X_train)
+                loss = -self._mll(output, y_train).sum()
                 loss.backward()
                 self.optimizer.step()
 
             self.losses.append(loss.item())
 
-            # Compute validation NLL
-            if has_val:
-                self.model.eval()
-                self.likelihood.eval()
-                with torch.no_grad(), gpytorch.settings.fast_pred_var():
-                    val_pred_dist = self.likelihood(self.model(X_val_device))
-                    val_nll = -val_pred_dist.log_prob(y_val_device).sum().item()
-                self.val_losses.append(val_nll)
-                self.model.train()
-                self.likelihood.train()
+            # Compute validation MLL
+            self.model.model.eval()
+            self.model.likelihood.eval()
+            with torch.no_grad(), gpytorch.settings.fast_pred_var():
+                val_pred_dist = self.model.likelihood(self.model.model(X_val))
+                val_mll = val_pred_dist.log_prob(y_val).sum().item()
+            self.val_losses.append(val_mll)
+            self.model.model.train()
+            self.model.likelihood.train()
 
             if (i + 1) % 20 == 0:
-                try:
-                    ls = self.model.covar_module.base_kernel.lengthscale.item()
-                    print(f"  Iter {i+1} - Loss: {loss.item():.4f} - Lengthscale: {ls:.3f}")
-                except AttributeError:
-                    print(f"  Iter {i+1} - Loss: {loss.item():.4f}")
+                ls = self.model.get_lengthscale()
+                print(f"  Iter {i+1} - Loss: {loss.item():.4f} - Lengthscale: {ls:.3f}")
 
         return self.losses, self.val_losses
 
-    def predict(self, X: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
-        """Make predictions with trained model."""
-        self.model.eval()
-        self.likelihood.eval()
-
-        X_device = X.to(self.device, dtype=torch.double)
-
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            posterior = self.model(X_device)
-            mean = posterior.mean.cpu().numpy()
-            variance = posterior.variance.cpu().numpy()
-
-        return mean, variance
-
-    def compute_nll(
+    def compute_mll(
         self,
         X: torch.Tensor,
         y: torch.Tensor,
         comparisons: torch.Tensor = None,
+        X_pairwise: torch.Tensor = None,
     ) -> float:
-        """Compute NLL on given data."""
-        self.model.eval()
-        self.likelihood.eval()
+        """
+        Compute MLL on given data.
 
-        X_device = X.to(self.device, dtype=torch.double)
-        y_device = y.to(self.device, dtype=torch.double)
+        Args:
+            X: Input tensor.
+            y: Target tensor.
+            comparisons: Ignored.
+            X_pairwise: Ignored.
+
+        Returns:
+            MLL value (higher is better).
+        """
+        device = self.model.device
+        self.model.model.eval()
+        self.model.likelihood.eval()
+
+        X_device = X.to(device, dtype=torch.float64)
+        y_device = y.to(device, dtype=torch.float64).squeeze(-1)
 
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            pred_dist = self.likelihood(self.model(X_device))
-            nll = -pred_dist.log_prob(y_device).sum().item()
+            pred_dist = self.model.likelihood(self.model.model(X_device))
+            mll = pred_dist.log_prob(y_device).sum().item()
 
-        return nll
+        return mll
 
-    def compute_train_nll(self) -> float:
-        """Compute NLL on training data (convenience method)."""
-        return self.compute_nll(self._X_train, self._y_train)
+    def predict(self, X: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
+        """Make predictions with trained model."""
+        return self.model.predict(X)
 
-    def get_lengthscale(self) -> Any:
-        """Extract lengthscale from trained model."""
-        try:
-            ls_tensor = self.model.covar_module.base_kernel.lengthscale
-            ls = ls_tensor.detach().cpu().numpy().flatten()
-            if ls.size == 1:
-                return ls.item()
-            return str(ls.tolist())
-        except AttributeError:
-            return np.nan
+    def get_lengthscale(self) -> float:
+        """Get learned lengthscale."""
+        return self.model.get_lengthscale()
+
+    def get_noise_variance(self) -> float:
+        """Get learned noise variance."""
+        return self.model.get_noise_variance()
 
     def cleanup(self):
         """Release ExactGP-specific resources."""
-        if hasattr(self, 'likelihood'):
-            del self.likelihood
-        if hasattr(self, '_X_train'):
-            del self._X_train
-        if hasattr(self, '_y_train'):
-            del self._y_train
-        if hasattr(self, '_mll'):
+        if self._mll is not None:
             del self._mll
+            self._mll = None
         super().cleanup()

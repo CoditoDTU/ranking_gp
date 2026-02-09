@@ -1,111 +1,92 @@
 """
 Base trainer interface for GP models.
 
- @abstractmethod: contract, forcing any subclass that inherits from the base class to 
- provide its own concrete implementation of that method. Pairwise and Exact have different methods
- 
+Simplified to work with ExperimentData and model wrappers.
 """
 from abc import ABC, abstractmethod
-from typing import Tuple, List, Any, Optional
+from typing import Tuple, List
 import torch
-import numpy as np
+
+from ..models.base import BaseModelWrapper
+from ..data.dataset import ExperimentData
 
 
 class BaseTrainer(ABC):
-    """Abstract base class for GP trainers."""
+    """
+    Abstract base class for GP trainers.
+
+    Trainers handle the training loop and loss computation.
+    Models are built externally using model wrappers.
+    """
 
     def __init__(
         self,
-        kernel_name: str,
-        dimension: int,
+        model: BaseModelWrapper,
         training_iters: int,
-        lr: float, # this could be OR domai/list[]
+        lr: float,
         optimizer_name: str,
-        device: torch.device,
     ):
-        self.kernel_name = kernel_name
-        self.dimension = dimension
+        """
+        Initialize the trainer.
+
+        Args:
+            model: Model wrapper (ExactGPModel or PairwiseGPModel).
+            training_iters: Number of training iterations.
+            lr: Learning rate.
+            optimizer_name: Name of optimizer ('Adam', 'SGD', 'LBFGS').
+        """
+        self.model = model
         self.training_iters = training_iters
         self.lr = lr
         self.optimizer_name = optimizer_name
-        self.device = device
 
-        self.model = None
         self.optimizer = None
         self.losses: List[float] = []
         self.val_losses: List[float] = []
 
     @property
-    @abstractmethod 
     def model_name(self) -> str:
-        """Return model name (e.g., 'PairwiseGP', 'ExactGP')."""
-        pass
+        """Return model name from wrapper."""
+        return self.model.name
 
     @abstractmethod
-    def train(
-        self,
-        X_train: torch.Tensor,
-        y_train: torch.Tensor,
-        comparisons: torch.Tensor = None,
-        X_train_pairwise: torch.Tensor = None,
-        X_val: Optional[torch.Tensor] = None,
-        y_val: Optional[torch.Tensor] = None,
-        val_comparisons: Optional[torch.Tensor] = None,
-        X_val_pairwise: Optional[torch.Tensor] = None,
-    ) -> Tuple[List[float], List[float]]:
+    def train(self, data: ExperimentData) -> Tuple[List[float], List[float]]:
         """
-        Train the model.
+        Train the model using ExperimentData.
 
         Args:
-            X_train: Training inputs.
-            y_train: Training targets.
-            comparisons: Pairwise comparisons (for PairwiseGP).
-            X_train_pairwise: Pairwise subset of X_train (for PairwiseGP).
-            X_val: Validation inputs (optional).
-            y_val: Validation targets (optional).
-            val_comparisons: Validation pairwise comparisons (optional, for PairwiseGP).
-            X_val_pairwise: Pairwise subset of X_val (optional, for PairwiseGP).
+            data: ExperimentData object with all splits prepared.
 
         Returns:
-            Tuple of (training_losses, validation_losses).
-            validation_losses is empty if no validation data provided.
+            Tuple of (train_losses, val_losses) per iteration.
         """
         pass
 
     @abstractmethod
-    def predict(self, X: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Make predictions.
-
-        Args:
-            X: Input points.
-
-        Returns:
-            Tuple of (mean predictions, variance).
-        """
-        pass
-
-    @abstractmethod
-    def compute_nll(
+    def compute_mll(
         self,
         X: torch.Tensor,
         y: torch.Tensor,
         comparisons: torch.Tensor = None,
+        X_pairwise: torch.Tensor = None,
     ) -> float:
-        """Compute negative log likelihood on given data."""
-        pass
+        """
+        Compute marginal log likelihood on given data.
 
-    @abstractmethod
-    def get_lengthscale(self) -> Any:
-        """Extract learned lengthscale(s) from the model."""
+        Args:
+            X: Input tensor.
+            y: Target tensor.
+            comparisons: Pairwise comparison indices (for PairwiseGP).
+            X_pairwise: Pairwise input data (for PairwiseGP).
+
+        Returns:
+            MLL value (higher is better, unlike NLL).
+        """
         pass
 
     def cleanup(self):
-        """Release model resources and free GPU memory."""
-        if hasattr(self, 'model') and self.model is not None:
-            del self.model
-            self.model = None
-        if hasattr(self, 'optimizer') and self.optimizer is not None:
+        """Release resources and free GPU memory."""
+        if self.optimizer is not None:
             del self.optimizer
             self.optimizer = None
         if torch.cuda.is_available():
