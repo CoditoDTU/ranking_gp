@@ -8,31 +8,47 @@ This repository contains a framework for running Gaussian Process (GP) inference
 ranking_gp/
 ├── run_experiments.py           # Main experiment runner
 ├── run_grid_search.py           # Grid search over experiment parameters
+├── aggregate_grid_search.py     # Aggregate results from grid search runs
 ├── run_visualization.py         # Standalone visualization (re-plot from saved data)
-├── config.yaml                  # Configuration file for experiment parameters
-├── grid_config.yaml             # Grid search parameter space definition
-├── environment.yaml             # Conda environment definition
-├── module_1.py                  # Legacy monolithic script (deprecated)
+├── configs/
+│   ├── config.yaml              # Base experiment configuration
+│   ├── config_new.yaml          # New config with SNR-based noise
+│   ├── grid_config.yaml         # Grid search parameter space
+│   └── environment.yaml         # Conda environment definition
 ├── src/
 │   ├── config/
-│   │   ├── experiment_config.py # ExperimentConfig dataclass, config loading
-│   │   └── cli.py               # Argument parsers for both scripts
+│   │   ├── config.py            # Config dataclasses (ExperimentConfig, DataConfig, etc.)
+│   │   ├── cli.py               # Argument parsers for experiment scripts
+│   │   └── experiment_config.py # Legacy experiment config (deprecated)
+│   ├── data/
+│   │   ├── dataset.py           # ExperimentData class (sampling, noise, comparisons)
+│   │   ├── fitness_functions.py # Benchmark test functions
+│   │   └── comparisons.py       # Pairwise comparison utilities
+│   ├── models/
+│   │   ├── base.py              # BaseGPModel abstract class
+│   │   ├── exact_gp.py          # ExactGPModel (gpytorch)
+│   │   ├── pairwise_gp.py       # PairwiseGPModel (botorch)
+│   │   └── kernels.py           # Kernel construction utilities
+│   ├── trainers/
+│   │   ├── base.py              # BaseTrainer abstract class
+│   │   ├── exact_gp.py          # ExactGPTrainer
+│   │   └── pairwise_gp.py       # PairwiseGPTrainer
+│   ├── results/
+│   │   ├── types.py             # ModelResult, FailureRecord dataclasses
+│   │   └── collector.py         # ResultsCollector (aggregates and saves best models)
+│   ├── visualization/
+│   │   ├── experiment_plots.py  # Per-experiment 3x2 grid plots
+│   │   ├── grid_search_plots.py # MLL vs SNR, comparison heatmaps
+│   │   └── plots.py             # Legacy plots
 │   ├── experiment/
 │   │   ├── logger.py            # Logger (tees stdout to log file)
 │   │   ├── manager.py           # ExperimentManager (directories, run IDs)
-│   │   └── results.py           # ResultsCollector, TrainingResult dataclass
-│   ├── trainers/
-│   │   ├── base.py              # BaseTrainer abstract class
-│   │   ├── pairwise_gp.py      # PairwiseGPTrainer
-│   │   └── exact_gp.py         # ExactGPTrainer
-│   ├── visualization/
-│   │   └── experiment_plots.py  # 3x2 grid plots (loss, fit, monotonicity)
-│   ├── models.py                # GP model definitions (gpytorch / botorch)
-│   ├── fitness_functions.py     # Benchmark test functions
-│   ├── datatools.py             # Pairwise comparison utilities
-│   ├── noise.py                 # Noise generation
+│   │   ├── progress.py          # Progress tracking
+│   │   └── results.py           # Legacy results (deprecated)
 │   └── solvers/
 │       └── get_solvers.py       # Optimizer factory (Adam, SGD, AdamW, LBFGS)
+├── module_1.py                  # Legacy monolithic script (deprecated)
+├── deprecated/                  # Old plotting scripts
 └── unittest/
     └── test_fitness_functions.py
 ```
@@ -47,7 +63,7 @@ ranking_gp/
 
 2.  **Create the Conda environment:**
     ```bash
-    conda env create -f environment.yaml
+    conda env create -f configs/environment.yaml
     ```
 
 3.  **Activate the environment:**
@@ -64,43 +80,48 @@ ranking_gp/
 python run_experiments.py
 
 # Run with a specific config file
-python run_experiments.py --config config.yaml
+python run_experiments.py --config configs/config_new.yaml
 
-# Override seed and noise type
-python run_experiments.py --seed 42 --noise_type gaussian
+# Override seed and SNR
+python run_experiments.py --seed 42 --snr 10.0
 
-# Run without generating plots (results are still saved)
-python run_experiments.py --no-plot
+# Specify optimizer and learning rate
+python run_experiments.py --optimizer Adam --lr 0.01
 
-# Clear the aggregate summary before running
-python run_experiments.py --clear_aggregate
+# Run quietly (log to file only)
+python run_experiments.py --quiet
 ```
 
 All CLI flags for `run_experiments.py`:
 
 | Flag | Description |
 |---|---|
-| `--config` | Path to config YAML (default: `config.yaml`) |
+| `--config` | Path to config YAML (default: `config_new.yaml`) |
 | `--seed` | Random seed (overrides config) |
-| `--noise_type` | Noise type (overrides config) |
-| `--noise` / `--no-noise` | Enable/disable noise (overrides config) |
+| `--output_dir` | Output directory (overrides config) |
+| `--snr` | Data SNR - signal-to-noise ratio (overrides config). Use `inf` for no noise. |
+| `--snr_model` | Model SNR for priors (overrides config) |
+| `--n_train` | Number of training samples (overrides config) |
+| `--n_test` | Number of test samples (overrides config) |
+| `--val_fraction` | Fraction of training data for validation (0.0-1.0) |
 | `--fitness_function` | Single fitness function name (overrides config list) |
-| `--nsamples` | Number of training samples (overrides config) |
-| `--g_std` | Gaussian noise std (overrides `noise_params.g_std`) |
-| `--pairwise_training_iters` | PairwiseGP training iterations |
-| `--pairwise_lr` | PairwiseGP learning rate |
-| `--pairwise_optimizer` | PairwiseGP optimizer (Adam, SGD, AdamW, LBFGS) |
+| `--dimension` | Input dimension (overrides config) |
+| `--kernel` | Single kernel name (overrides config list) |
+| `--optimizer` | Optimizer for both GP types (Adam, SGD, AdamW, LBFGS) |
+| `--lr` | Learning rate for both GP types |
+| `--training_iters` | Training iterations for both GP types |
 | `--exact_training_iters` | ExactGP training iterations |
 | `--exact_lr` | ExactGP learning rate |
-| `--exact_optimizer` | ExactGP optimizer (Adam, SGD, AdamW, LBFGS) |
-| `--val_fraction` | Fraction of training data for validation (0.0-1.0, default: 0.0) |
-| `--clear_aggregate` | Clear existing aggregate summary before running |
-| `--no-plot` | Skip plot generation after experiments |
+| `--exact_optimizer` | ExactGP optimizer |
+| `--pairwise_training_iters` | PairwiseGP training iterations |
+| `--pairwise_lr` | PairwiseGP learning rate |
+| `--pairwise_optimizer` | PairwiseGP optimizer |
+| `--selection_criterion` | Model selection criterion (`val_mll`, `kendall_tau`, `spearman`) |
 | `--quiet`, `-q` | Suppress terminal output (log to file only) |
 
 ### Grid Search
 
-`run_grid_search.py` sweeps over experiment parameters by generating the Cartesian product of value lists defined in `grid_config.yaml` and spawning one `run_experiments.py` subprocess per combination:
+`run_grid_search.py` sweeps over experiment parameters by generating the Cartesian product of value lists defined in `grid_config.yaml`:
 
 ```bash
 # Run grid search with default grid_config.yaml
@@ -111,103 +132,69 @@ python run_grid_search.py --dry_run
 
 # Run up to 4 experiments in parallel
 python run_grid_search.py --max_parallel 4
-
-# Resume a crashed grid search (skips already-completed combinations)
-python run_grid_search.py --resume
-
-# Use a custom grid config and base config
-python run_grid_search.py --grid_config my_grid.yaml --config config.yaml
 ```
 
 All CLI flags for `run_grid_search.py`:
 
 | Flag | Description |
 |---|---|
-| `--grid_config` | Path to grid search YAML (default: `grid_config.yaml`) |
-| `--config` | Path to base experiment config YAML (default: `config.yaml`) |
+| `--grid_config` | Path to grid search YAML (default: `configs/grid_config.yaml`) |
+| `--config` | Path to base experiment config YAML |
 | `--dry_run` | Print commands without executing |
 | `--max_parallel` | Max concurrent experiments (default: 1 = sequential) |
-| `--resume` | Skip combinations that already have results in `experiments/` |
-| `--clear_aggregate` | Clear aggregate CSV before the first run |
 
 #### Grid Config Format
 
-Define parameter lists in `grid_config.yaml`. The Cartesian product of all lists defines the full grid. Omit any key to use the base config value.
-
 ```yaml
 grid_search:
+  # Seeds to sweep
+  seed: [42, 123, 456]
+
+  # SNR values (data noise level)
+  snr: [1.0, 5.0, 10.0, 20.0, 50.0]
+
+  # Optimizers
+  optimizer: [Adam, LBFGS]
+
   # Training iterations
-  pairwise_training_iters: [500, 1000, 1500, 2000]
+  pairwise_training_iters: [500, 1000, 1500]
   exact_training_iters: [250, 500, 1000]
 
   # Learning rates
-  pairwise_lr: [0.0001, 0.001, 0.01]
-  exact_lr: [0.01, 0.1, 0.5]
-
-  # Validation split (optional)
-  val_fraction: [0.0, 0.1, 0.2]
-
-  # Other sweepable parameters
-  # nsamples: [25, 50, 100]
-  # seed: [42, 123, 456]
-  # g_std: [0.5, 1.0, 1.5]
+  pairwise_lr: [0.001, 0.01]
+  exact_lr: [0.01, 0.1]
 ```
 
-**Example**: The config above produces `4 × 3 × 3 × 3 × 3 = 324` combinations.
+### Aggregating Grid Search Results
 
-Available sweep parameters:
+After running a grid search, use `aggregate_grid_search.py` to collect and analyze results:
 
-| Parameter | Description |
-|---|---|
-| `fitness_function` | Single fitness function to test |
-| `nsamples` | Number of training samples |
-| `g_std` | Gaussian noise standard deviation |
-| `pairwise_training_iters` | PairwiseGP training iterations |
-| `exact_training_iters` | ExactGP training iterations |
-| `pairwise_lr` | PairwiseGP learning rate |
-| `exact_lr` | ExactGP learning rate |
-| `pairwise_optimizer` | PairwiseGP optimizer (Adam, SGD, AdamW, LBFGS) |
-| `exact_optimizer` | ExactGP optimizer (Adam, SGD, AdamW, LBFGS) |
-| `seed` | Random seed |
-| `noise_type` | Noise type (gaussian) |
-| `val_fraction` | Fraction of training data for validation |
+```bash
+python aggregate_grid_search.py --grid_dir experiments/grid_20260209_143022
+```
 
-#### Resume
-
-When `--resume` is passed, the script scans each `experiments/experiments_*/` directory for a `config_*.yaml` and `summary_*.csv`. If both exist, the saved config is parsed to extract the grid-relevant parameters and that combination is skipped. Incomplete runs (missing summary CSV) are re-executed.
-
-#### Output Aggregation
-
-All grid search results are automatically aggregated into `experiments/aggregate_summary.csv`. Each row corresponds to a single model (GP type + kernel + fitness function) from each experiment run. When multiple seeds are used, `experiments/aggregate_stats.csv` provides mean and standard deviation across seeds.
+This creates:
+- `aggregate_results.csv`: All best models from all runs
+- `best_overall_per_fitness.csv`: Summary table of best model per fitness function
+- `best_overall/`: Complete files for overall best per fitness function
+- `plots/`: MLL vs SNR plots and comparison heatmaps
 
 ### Re-plotting from Saved Results
-
-`run_visualization.py` regenerates plots from previously saved experiment data, without re-running experiments:
 
 ```bash
 # Plot the latest experiment
 python run_visualization.py
 
 # Plot a specific experiment by ID
-python run_visualization.py --id 270126_0
+python run_visualization.py --id exp_20260207_143022
 
 # Plot all experiments
 python run_visualization.py --all
 ```
 
-All CLI flags for `run_visualization.py`:
-
-| Flag | Description |
-|---|---|
-| `--id` | Specific experiment ID (e.g., `270126_0`). Defaults to latest. |
-| `--all` | Generate plots for all experiments in `experiments/` |
-| `--config` | Path to fallback config file (default: `config.yaml`) |
-
-When `--all` is used, each experiment's saved `config_*.yaml` is loaded so that plots reflect the correct learning rates and dimension for that run.
-
 ## Configuration
 
-Modify `config.yaml` to change experiment parameters:
+Modify `configs/config_new.yaml` to change experiment parameters:
 
 ```yaml
 experiment:
@@ -223,47 +210,123 @@ experiment:
     - matern_5_2
     - matern_3_2
     - exponential
-  nsamples: 50
-  n_test_points: 100
-  noise: False
-  dimension: 1
-  val_fraction: 0.2  # Fraction of training data for validation (0.0 = no validation)
+  gp_types:
+    - PairwiseGP
+    - ExactGP
 
+data:
+  n_train: 50
+  n_test: 100
+  dimension: 1
+  val_fraction: 0.2
+  snr: 10.0  # Signal-to-noise ratio (inf = no noise)
+
+model:
+  snr_model: 10.0  # SNR for model priors
+
+trainer:
   pairwise_gp:
     training_iters: 1500
     lr: 0.01
-    optimizer: Adam      # Options: Adam, SGD, AdamW, LBFGS
-
+    optimizer: Adam
   exact_gp:
     training_iters: 500
     lr: 0.1
     optimizer: Adam
+
+selection_criterion: val_mll  # Options: val_mll, kendall_tau, spearman
 ```
+
+### SNR-based Noise
+
+The framework uses Signal-to-Noise Ratio (SNR) to control noise levels:
+
+```
+noise_variance = signal_variance / SNR
+```
+
+Where `signal_variance` is computed from the training data. Higher SNR means less noise:
+- `SNR = inf`: No noise
+- `SNR = 100`: Very low noise
+- `SNR = 10`: Moderate noise
+- `SNR = 1`: High noise (signal = noise)
 
 ## Experiment Outputs
 
 All results are saved in the `experiments/` directory.
 
+### Single Experiment Output
+
 ```text
-experiments/
-├── experiments_DDMMYY_ID/
-│   ├── config_DDMMYY_ID.yaml       # Resolved config (for reproducibility)
-│   ├── summary_DDMMYY_ID.csv       # Metrics summary (NLL, Kendall tau, Spearman)
-│   ├── predictions_DDMMYY_ID.csv   # Merged predictions for all models
-│   ├── losses_DDMMYY_ID.json       # Training losses (for independent re-plotting)
-│   ├── log_DDMMYY_ID.txt           # Stdout log
-│   └── plots/                      # Generated PDF visualizations
-│       ├── ackley_squared_exponential.pdf
-│       └── ...
-├── aggregate_summary.csv            # Results across all seeds/runs
-└── aggregate_stats.csv              # Mean/std statistics across seeds
+experiments/exp_20260209_143022/
+├── best_models.json        # Best model per (gp_type, fitness_fn) for aggregation
+├── summary.csv             # Metrics summary for all best models
+├── failures.csv            # Failed experiments (if any)
+└── models/                 # Per-model detailed outputs
+    ├── ExactGP_ackley/
+    │   ├── losses.json     # Training and validation losses
+    │   ├── hyperparams.json # Kernel hyperparameters
+    │   ├── metrics.json    # MLL, Kendall tau, Spearman
+    │   └── predictions.csv # Predictions with X, y_true, y_noisy, y_pred, variance, std
+    └── PairwiseGP_ackley/
+        └── ...
 ```
 
-### Output Files
+### Grid Search Output
 
-- **Config YAML** (`config_*.yaml`): Snapshot of the resolved configuration (including CLI overrides) for full reproducibility.
-- **Summary CSV** (`summary_*.csv`): Metrics for every model trained in the run (GP type, fitness function, kernel, NLL, Kendall's tau, Spearman).
-- **Predictions CSV** (`predictions_*.csv`): Train/test data, predictions, variances, and lengthscales for all models.
-- **Losses JSON** (`losses_*.json`): Per-iteration training losses, enabling `run_visualization.py` to re-plot loss curves independently.
-- **Plots** (`plots/`): 3x2 PDF grids per function/kernel showing training loss, function fit (1D), and monotonicity for both ExactGP and PairwiseGP.
-- **Aggregate files**: `aggregate_summary.csv` accumulates results across seeds; `aggregate_stats.csv` reports mean/std when multiple seeds exist.
+```text
+experiments/grid_20260209_143022/
+├── grid_config.yaml        # Copy of grid search config
+├── runs/                   # Individual experiment runs
+│   ├── exp_s42_snr10_Adam/
+│   ├── exp_s42_snr20_Adam/
+│   └── ...
+├── aggregate_results.csv   # All best models from all runs
+├── best_overall_per_fitness.csv  # Best model per fitness function
+├── best_overall/           # Complete data for best models
+│   ├── ackley/
+│   │   ├── losses.json
+│   │   ├── hyperparams.json
+│   │   ├── metrics.json
+│   │   ├── predictions.csv
+│   │   └── source.json     # Source experiment reference
+│   └── ...
+└── plots/
+    ├── mll_vs_snr_ExactGP.pdf
+    ├── mll_vs_snr_PairwiseGP.pdf
+    ├── normalized_mll_vs_snr_ExactGP.pdf
+    ├── normalized_mll_vs_snr_PairwiseGP.pdf
+    ├── comparison_test_mll.pdf
+    └── comparison_kendall_tau.pdf
+```
+
+### Predictions CSV Format
+
+The `predictions.csv` file contains per-sample predictions with:
+
+| Column | Description |
+|---|---|
+| `fold` | Data split: 0=train, 1=val, 2=test |
+| `index` | Sample index within fold |
+| `X` | Input value(s) |
+| `y_true` | Ground truth output |
+| `y_noisy` | Noisy observation |
+| `y_pred` | Model prediction |
+| `variance` | Predictive variance |
+| `std` | Predictive standard deviation |
+
+### Failures CSV Format
+
+If any experiments fail (e.g., PSD matrix errors), they are logged in `failures.csv`:
+
+| Column | Description |
+|---|---|
+| `gp_type` | ExactGP or PairwiseGP |
+| `fitness_fn` | Fitness function name |
+| `kernel_name` | Kernel type |
+| `seed` | Random seed |
+| `snr_data` | Data SNR |
+| `snr_model` | Model SNR |
+| `error_type` | Exception class name |
+| `error_message` | Error details |
+| `timestamp` | When the error occurred |

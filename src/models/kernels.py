@@ -3,7 +3,6 @@ Kernel construction utilities for GP models.
 
 Moved from src/models.py - lengthscale is learnable by default.
 """
-import torch
 from typing import Optional
 from gpytorch.kernels import (
     ScaleKernel, MaternKernel, RBFKernel,

@@ -36,7 +36,7 @@ model:
     - exponential
 
   # Expected SNR for model priors (independent from data.snr)
-  snr_model: 10.0
+  snr_model: 50.0
 
   # Note: Lengthscale is learnable by default
 
@@ -51,7 +51,7 @@ trainer:
     optimizer: Adam
 
   pairwise_gp:
-    training_iters: 3000
+    training_iters: 2000
     lr: 0.01
     optimizer: Adam
 
