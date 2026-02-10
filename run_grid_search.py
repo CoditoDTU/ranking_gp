@@ -1,16 +1,23 @@
 #!/usr/bin/env python
 """
+DEPRECATED: Use run_grid_search.sh instead.
+
+This Python grid search runner is deprecated in favor of the shell script
+which provides better logging, resume functionality, and automatic aggregation.
+
+Usage (new):
+    ./run_grid_search.sh                              # Start new grid search
+    ./run_grid_search.sh --config my.yaml             # Use custom base config
+    ./run_grid_search.sh --resume experiments/grid_X  # Resume crashed grid search
+
+---
+
+Old description (deprecated):
 Grid search runner for GP ranking experiments.
 
 Reads a grid config YAML that specifies lists of values for each parameter,
 generates the Cartesian product, and runs one experiment per combination
 by invoking run_experiments.py as a subprocess with CLI overrides.
-
-Usage:
-    python run_grid_search.py                            # uses grid_config.yaml
-    python run_grid_search.py --grid_config my_grid.yaml
-    python run_grid_search.py --dry_run                  # print commands without executing
-    python run_grid_search.py --max_parallel 4           # run up to 4 experiments in parallel
 """
 import argparse
 import glob

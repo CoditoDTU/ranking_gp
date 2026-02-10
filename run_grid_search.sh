@@ -6,26 +6,22 @@
 #
 # Usage:
 #   ./run_grid_search.sh                              # Start new grid search
-#   ./run_grid_search.sh --config my.yaml             # Use custom base config
+#   ./run_grid_search.sh --grid_config my_grid.yaml   # Use custom grid config
 #   ./run_grid_search.sh --resume experiments/grid_X  # Resume crashed grid search
 #   ./run_grid_search.sh --quiet                      # Less verbose output
 
 set -o pipefail
 
-# Default values - can be overridden by editing these arrays
-SEEDS=(0 1 2 3 4 5 6 7 8 9 10)
-SNRS=(inf 100 20 10)
-OPTIMIZERS=("Adam")
-
-# Parse command line arguments
-CONFIG="config_new.yaml"
+# Default values
+GRID_CONFIG="configs/grid_search.yaml"
 QUIET=""
 RESUME_DIR=""
 
+# Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --config)
-            CONFIG="$2"
+        --grid_config)
+            GRID_CONFIG="$2"
             shift 2
             ;;
         --quiet)
@@ -38,11 +34,44 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: ./run_grid_search.sh [--config FILE] [--quiet] [--resume DIR]"
+            echo "Usage: ./run_grid_search.sh [--grid_config FILE] [--quiet] [--resume DIR]"
             exit 1
             ;;
     esac
 done
+
+# Check if grid config exists
+if [[ ! -f "$GRID_CONFIG" ]]; then
+    echo "Error: Grid config not found: $GRID_CONFIG"
+    echo "Create one or use --grid_config to specify a different file."
+    exit 1
+fi
+
+# Parse YAML config using Python
+read_yaml() {
+    python3 << EOF
+import yaml
+
+with open("$GRID_CONFIG") as f:
+    config = yaml.safe_load(f)
+
+# Output as shell-compatible format
+seeds = config.get('seeds', [42])
+snrs = config.get('snrs', [10])
+optimizers = config.get('optimizers', ['Adam'])
+base_config = config.get('base_config', 'config_new.yaml')
+
+# Convert to space-separated strings for bash arrays
+print(f"SEEDS=({' '.join(str(s) for s in seeds)})")
+print(f"SNRS=({' '.join(str(s) for s in snrs)})")
+opt_str = ' '.join(f'"{o}"' for o in optimizers)
+print(f"OPTIMIZERS=({opt_str})")
+print(f'CONFIG="{base_config}"')
+EOF
+}
+
+# Load config from YAML
+eval "$(read_yaml)"
 
 # Setup grid directory
 if [[ -n "$RESUME_DIR" ]]; then
@@ -71,6 +100,7 @@ LOG_FILE="$GRID_DIR/grid_search.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
 echo "Log file: $LOG_FILE"
+echo "Grid config: $GRID_CONFIG"
 echo "Seeds: ${SEEDS[*]}"
 echo "SNRs: ${SNRS[*]}"
 echo "Optimizers: ${OPTIMIZERS[*]}"
@@ -94,17 +124,19 @@ mark_completed() {
     echo "$exp_name" >> "$STATUS_FILE"
 }
 
-# Save grid configuration (only on new run)
+# Save configs (only on new run)
 if [[ -z "$RESUME_DIR" ]]; then
-    cat > "$GRID_DIR/grid_config.yaml" << EOF
-# Grid Search Configuration
-# Generated on $(date)
+    # Copy the grid search config
+    cp "$GRID_CONFIG" "$GRID_DIR/grid_search_config.yaml"
+    echo "Saved grid config to: $GRID_DIR/grid_search_config.yaml"
 
-seeds: [${SEEDS[*]}]
-snrs: [${SNRS[*]}]
-optimizers: [${OPTIMIZERS[*]}]
-base_config: $CONFIG
-EOF
+    # Copy the base config file for reproducibility
+    if [[ -f "$CONFIG" ]]; then
+        cp "$CONFIG" "$GRID_DIR/base_config.yaml"
+        echo "Saved base config to: $GRID_DIR/base_config.yaml"
+    else
+        echo "Warning: Base config file not found: $CONFIG"
+    fi
 fi
 
 # Count total and completed experiments
@@ -187,6 +219,8 @@ if [ $? -eq 0 ]; then
     echo "  - $GRID_DIR/best_overall/"
     echo "  - $GRID_DIR/plots/"
     echo "  - $GRID_DIR/grid_search.log"
+    echo "  - $GRID_DIR/base_config.yaml"
+    echo "  - $GRID_DIR/grid_search_config.yaml"
 else
     echo "WARNING: Aggregation failed!"
 fi
