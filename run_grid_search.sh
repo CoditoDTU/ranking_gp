@@ -13,7 +13,7 @@
 set -o pipefail
 
 # Default values
-GRID_CONFIG="configs/grid_search.yaml"
+GRID_CONFIG="/Users/codito/Code/Msc/ranking_gp/configs/grid_search.yaml"
 QUIET=""
 RESUME_DIR=""
 

@@ -96,7 +96,7 @@ All CLI flags for `run_experiments.py`:
 
 | Flag | Description |
 |---|---|
-| `--config` | Path to config YAML (default: `config_new.yaml`) |
+| `--config` | Path to config YAML (default: `configs/config_new.yaml`) |
 | `--seed` | Random seed (overrides config) |
 | `--output_dir` | Output directory (overrides config) |
 | `--snr` | Data SNR - signal-to-noise ratio (overrides config). Use `inf` for no noise. |

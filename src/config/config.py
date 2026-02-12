@@ -40,8 +40,13 @@ class ModelConfig:
 class GPTrainerSettings:
     """Settings for a single GP trainer."""
     training_iters: int
-    lr: float
+    lrs: List[float]  # List of learning rates for grid search
     optimizer: str
+
+    @property
+    def lr(self) -> float:
+        """Return first LR for backwards compatibility."""
+        return self.lrs[0] if self.lrs else 0.01
 
 
 @dataclass
@@ -107,6 +112,15 @@ def load_config(config_path: str) -> Config:
     else:
         snr_model = float(snr_model_str)
 
+    # Parse LRs (support both 'lr' for single value and 'lrs' for list)
+    def parse_lrs(trainer_raw: dict) -> List[float]:
+        if 'lrs' in trainer_raw:
+            return list(trainer_raw['lrs'])
+        elif 'lr' in trainer_raw:
+            return [float(trainer_raw['lr'])]
+        else:
+            return [0.01]  # default
+
     return Config(
         data=DataConfig(
             fitness_functions=raw['data']['fitness_functions'],
@@ -123,12 +137,12 @@ def load_config(config_path: str) -> Config:
         trainer=TrainerConfig(
             exact_gp=GPTrainerSettings(
                 training_iters=raw['trainer']['exact_gp']['training_iters'],
-                lr=raw['trainer']['exact_gp']['lr'],
+                lrs=parse_lrs(raw['trainer']['exact_gp']),
                 optimizer=raw['trainer']['exact_gp']['optimizer'],
             ),
             pairwise_gp=GPTrainerSettings(
                 training_iters=raw['trainer']['pairwise_gp']['training_iters'],
-                lr=raw['trainer']['pairwise_gp']['lr'],
+                lrs=parse_lrs(raw['trainer']['pairwise_gp']),
                 optimizer=raw['trainer']['pairwise_gp']['optimizer'],
             ),
         ),
@@ -200,8 +214,9 @@ def load_config_with_overrides(config_path: str, overrides: Dict[str, Any] = Non
         config.trainer.pairwise_gp.optimizer = overrides['optimizer']
 
     if overrides.get('lr') is not None:
-        config.trainer.exact_gp.lr = overrides['lr']
-        config.trainer.pairwise_gp.lr = overrides['lr']
+        # CLI --lr overrides lrs list with single value (disables LR grid search)
+        config.trainer.exact_gp.lrs = [overrides['lr']]
+        config.trainer.pairwise_gp.lrs = [overrides['lr']]
 
     if overrides.get('training_iters') is not None:
         config.trainer.exact_gp.training_iters = overrides['training_iters']
@@ -212,7 +227,7 @@ def load_config_with_overrides(config_path: str, overrides: Dict[str, Any] = Non
         config.trainer.exact_gp.optimizer = overrides['exact_optimizer']
 
     if overrides.get('exact_lr') is not None:
-        config.trainer.exact_gp.lr = overrides['exact_lr']
+        config.trainer.exact_gp.lrs = [overrides['exact_lr']]
 
     if overrides.get('exact_training_iters') is not None:
         config.trainer.exact_gp.training_iters = overrides['exact_training_iters']
@@ -222,7 +237,7 @@ def load_config_with_overrides(config_path: str, overrides: Dict[str, Any] = Non
         config.trainer.pairwise_gp.optimizer = overrides['pairwise_optimizer']
 
     if overrides.get('pairwise_lr') is not None:
-        config.trainer.pairwise_gp.lr = overrides['pairwise_lr']
+        config.trainer.pairwise_gp.lrs = [overrides['pairwise_lr']]
 
     if overrides.get('pairwise_training_iters') is not None:
         config.trainer.pairwise_gp.training_iters = overrides['pairwise_training_iters']

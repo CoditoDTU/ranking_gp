@@ -11,7 +11,7 @@ def create_experiment_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run GP Ranking Experiment")
 
     # Config file
-    parser.add_argument("--config", type=str, default="config_new.yaml",
+    parser.add_argument("--config", type=str, default="configs/config_new.yaml",
                         help="Path to config file")
 
     # Experiment settings
@@ -83,6 +83,6 @@ def create_visualization_parser() -> argparse.ArgumentParser:
                         help="Specific experiment ID (e.g., exp_20260207_143022). Defaults to latest.")
     parser.add_argument("--all", action="store_true",
                         help="Generate plots for all experiments in experiments/")
-    parser.add_argument("--config", type=str, default="config_new.yaml",
+    parser.add_argument("--config", type=str, default="configs/config_new.yaml",
                         help="Path to config file (fallback for dimension info)")
     return parser

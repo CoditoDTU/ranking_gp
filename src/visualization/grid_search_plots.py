@@ -3,9 +3,11 @@ Grid search visualization functions.
 
 Provides plotting utilities for aggregate grid search results:
 - Combined MLL/Kendall Tau vs SNR plots (3x2 grid)
+- Per-fitness-function plots
 - Comparison heatmaps (ExactGP vs PairwiseGP)
 """
 from pathlib import Path
+from typing import Optional, List
 
 import numpy as np
 import pandas as pd
@@ -48,9 +50,119 @@ def normalize_mll_zscore(df: pd.DataFrame, metric_col: str = "test_mll") -> pd.D
     return df
 
 
+def _plot_metrics_grid(
+    df: pd.DataFrame,
+    output_path: Path,
+    fitness_fns: Optional[List[str]] = None,
+    title_suffix: str = "",
+):
+    """
+    Plot a 3x2 grid of metrics vs SNR.
+
+    Args:
+        df: DataFrame with normalized MLL column.
+        output_path: Full path to save the plot.
+        fitness_fns: List of fitness functions to include. If None, use all.
+        title_suffix: Suffix to add to plot titles.
+    """
+    gp_types = ["ExactGP", "PairwiseGP"]
+    fig, axes = plt.subplots(3, 2, figsize=(14, 12))
+
+    for col_idx, gp_type in enumerate(gp_types):
+        gp_df = df[df["gp_type"] == gp_type]
+        if gp_df.empty:
+            continue
+
+        if fitness_fns is None:
+            plot_fns = sorted(gp_df["fitness_fn"].unique())
+        else:
+            plot_fns = [fn for fn in fitness_fns if fn in gp_df["fitness_fn"].values]
+
+        # Row 1: Test MLL vs SNR
+        ax = axes[0, col_idx]
+        for fitness_fn in plot_fns:
+            subset = gp_df[gp_df["fitness_fn"] == fitness_fn]
+            stats = subset.groupby("snr_data")["test_mll"].agg(["mean", "std"])
+
+            ax.errorbar(
+                stats.index,
+                stats["mean"],
+                yerr=stats["std"],
+                marker="o",
+                capsize=3,
+                capthick=1,
+                label=fitness_fn,
+            )
+
+        ax.set_xlabel("SNR (data)")
+        ax.set_ylabel("Test MLL")
+        ax.set_xscale("log")
+        ax.set_title(f"{gp_type}: Test MLL vs SNR{title_suffix}")
+        ax.grid(True, alpha=0.3)
+        if col_idx == 1 and len(plot_fns) > 1:
+            ax.legend(loc="best", fontsize=7, ncol=2)
+
+        # Row 2: Normalized MLL vs SNR
+        ax = axes[1, col_idx]
+        for fitness_fn in plot_fns:
+            subset = gp_df[gp_df["fitness_fn"] == fitness_fn]
+            stats = subset.groupby("snr_data")["test_mll_normalized"].agg(["mean", "std"])
+
+            ax.errorbar(
+                stats.index,
+                stats["mean"],
+                yerr=stats["std"],
+                marker="o",
+                capsize=3,
+                capthick=1,
+                label=fitness_fn,
+            )
+
+        ax.set_xlabel("SNR (data)")
+        ax.set_ylabel("Normalized Test MLL (z-score)")
+        ax.set_xscale("log")
+        ax.set_title(f"{gp_type}: Normalized MLL vs SNR{title_suffix}")
+        ax.grid(True, alpha=0.3)
+        ax.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
+        if col_idx == 1 and len(plot_fns) > 1:
+            ax.legend(loc="best", fontsize=7, ncol=2)
+
+        # Row 3: Kendall Tau vs SNR
+        ax = axes[2, col_idx]
+        for fitness_fn in plot_fns:
+            subset = gp_df[gp_df["fitness_fn"] == fitness_fn]
+            stats = subset.groupby("snr_data")["kendall_tau"].agg(["mean", "std"])
+
+            ax.errorbar(
+                stats.index,
+                stats["mean"],
+                yerr=stats["std"],
+                marker="o",
+                capsize=3,
+                capthick=1,
+                label=fitness_fn,
+            )
+
+        ax.set_xlabel("SNR (data)")
+        ax.set_ylabel("Kendall Tau")
+        ax.set_xscale("log")
+        ax.set_title(f"{gp_type}: Kendall Tau vs SNR{title_suffix}")
+        ax.grid(True, alpha=0.3)
+        if col_idx == 1 and len(plot_fns) > 1:
+            ax.legend(loc="best", fontsize=7, ncol=2)
+
+    plt.tight_layout()
+    plt.savefig(output_path, bbox_inches="tight")
+    plt.close()
+
+
 def plot_mll_vs_snr(df: pd.DataFrame, output_dir: Path):
     """
-    Plot MLL and Kendall Tau vs SNR in a single 3x2 grid.
+    Plot MLL and Kendall Tau vs SNR in 3x2 grids.
+
+    Creates:
+    - metrics_vs_snr.pdf: Combined plot with all fitness functions
+    - metrics_vs_snr_{fitness_fn}.pdf: Individual plot per fitness function
 
     Layout:
         - Columns: ExactGP, PairwiseGP
@@ -70,94 +182,31 @@ def plot_mll_vs_snr(df: pd.DataFrame, output_dir: Path):
     # Normalize MLL per fitness function
     df = normalize_mll_zscore(df, "test_mll")
 
-    gp_types = ["ExactGP", "PairwiseGP"]
-    fig, axes = plt.subplots(3, 2, figsize=(14, 12))
+    # Get all fitness functions
+    all_fitness_fns = sorted(df["fitness_fn"].unique())
 
-    for col_idx, gp_type in enumerate(gp_types):
-        gp_df = df[df["gp_type"] == gp_type]
-        if gp_df.empty:
-            continue
+    # 1. Combined plot with all fitness functions
+    _plot_metrics_grid(
+        df,
+        plots_dir / "metrics_vs_snr.pdf",
+        fitness_fns=None,
+        title_suffix="",
+    )
+    print(f"  Saved combined metrics plot to {plots_dir}/metrics_vs_snr.pdf")
 
-        fitness_fns = sorted(gp_df["fitness_fn"].unique())
+    # 2. Individual plots per fitness function
+    per_fn_dir = plots_dir / "per_fitness_fn"
+    per_fn_dir.mkdir(parents=True, exist_ok=True)
 
-        # Row 1: Test MLL vs SNR
-        ax = axes[0, col_idx]
-        for fitness_fn in fitness_fns:
-            subset = gp_df[gp_df["fitness_fn"] == fitness_fn]
-            stats = subset.groupby("snr_data")["test_mll"].agg(["mean", "std"])
+    for fitness_fn in all_fitness_fns:
+        _plot_metrics_grid(
+            df,
+            per_fn_dir / f"metrics_vs_snr_{fitness_fn}.pdf",
+            fitness_fns=[fitness_fn],
+            title_suffix=f" ({fitness_fn})",
+        )
 
-            ax.errorbar(
-                stats.index,
-                stats["mean"],
-                yerr=stats["std"],
-                marker="o",
-                capsize=3,
-                capthick=1,
-                label=fitness_fn,
-            )
-
-        ax.set_xlabel("SNR (data)")
-        ax.set_ylabel("Test MLL")
-        ax.set_xscale("log")
-        ax.set_title(f"{gp_type}: Test MLL vs SNR")
-        ax.grid(True, alpha=0.3)
-        if col_idx == 1:
-            ax.legend(loc="best", fontsize=7, ncol=2)
-
-        # Row 2: Normalized MLL vs SNR
-        ax = axes[1, col_idx]
-        for fitness_fn in fitness_fns:
-            subset = gp_df[gp_df["fitness_fn"] == fitness_fn]
-            stats = subset.groupby("snr_data")["test_mll_normalized"].agg(["mean", "std"])
-
-            ax.errorbar(
-                stats.index,
-                stats["mean"],
-                yerr=stats["std"],
-                marker="o",
-                capsize=3,
-                capthick=1,
-                label=fitness_fn,
-            )
-
-        ax.set_xlabel("SNR (data)")
-        ax.set_ylabel("Normalized Test MLL (z-score)")
-        ax.set_xscale("log")
-        ax.set_title(f"{gp_type}: Normalized MLL vs SNR")
-        ax.grid(True, alpha=0.3)
-        ax.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
-        if col_idx == 1:
-            ax.legend(loc="best", fontsize=7, ncol=2)
-
-        # Row 3: Kendall Tau vs SNR
-        ax = axes[2, col_idx]
-        for fitness_fn in fitness_fns:
-            subset = gp_df[gp_df["fitness_fn"] == fitness_fn]
-            stats = subset.groupby("snr_data")["kendall_tau"].agg(["mean", "std"])
-
-            ax.errorbar(
-                stats.index,
-                stats["mean"],
-                yerr=stats["std"],
-                marker="o",
-                capsize=3,
-                capthick=1,
-                label=fitness_fn,
-            )
-
-        ax.set_xlabel("SNR (data)")
-        ax.set_ylabel("Kendall Tau")
-        ax.set_xscale("log")
-        ax.set_title(f"{gp_type}: Kendall Tau vs SNR")
-        ax.grid(True, alpha=0.3)
-        if col_idx == 1:
-            ax.legend(loc="best", fontsize=7, ncol=2)
-
-    plt.tight_layout()
-    plt.savefig(plots_dir / "metrics_vs_snr.pdf", bbox_inches="tight")
-    plt.close()
-
-    print(f"  Saved metrics vs SNR plot to {plots_dir}/metrics_vs_snr.pdf")
+    print(f"  Saved {len(all_fitness_fns)} per-function plots to {per_fn_dir}/")
 
 
 def plot_normalized_mll_vs_snr(df: pd.DataFrame, output_dir: Path):

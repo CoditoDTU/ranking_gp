@@ -136,94 +136,111 @@ def main():
 
 
 def train_exactgp(data, kernel_name, config, device, fn_name, collector):
-    """Train ExactGP model and return ModelResult."""
-    try:
-        # Build model
-        model = ExactGPModel(
-            kernel_name=kernel_name,
-            dimension=config.data.dimension,
-            snr_model=config.model.snr_model,
-            signal_variance=data.signal_variance,
-            device=device,
-        )
-        model.build(
-            X_train=data.X_train,
-            y_train=data.Y_train_noisy,
-        )
+    """Train ExactGP model with LR grid search and return best ModelResult."""
+    lrs = config.trainer.exact_gp.lrs
+    best_result = None
+    best_val_score = float('-inf')
+    best_lr = None
 
-        # Create trainer
-        trainer = ExactGPTrainer(
-            model=model,
-            training_iters=config.trainer.exact_gp.training_iters,
-            lr=config.trainer.exact_gp.lr,
-            optimizer_name=config.trainer.exact_gp.optimizer,
-        )
+    for lr in lrs:
+        try:
+            # Build model
+            model = ExactGPModel(
+                kernel_name=kernel_name,
+                dimension=config.data.dimension,
+                snr_model=config.model.snr_model,
+                signal_variance=data.signal_variance,
+                device=device,
+            )
+            model.build(
+                X_train=data.X_train,
+                y_train=data.Y_train_noisy,
+            )
 
-        # Train
-        train_losses, val_losses = trainer.train(data)
+            # Create trainer
+            trainer = ExactGPTrainer(
+                model=model,
+                training_iters=config.trainer.exact_gp.training_iters,
+                lr=lr,
+                optimizer_name=config.trainer.exact_gp.optimizer,
+            )
 
-        # Compute metrics
-        train_mll = trainer.compute_mll(data.X_train, data.Y_train_noisy)
-        val_mll = trainer.compute_mll(data.X_val, data.Y_val_noisy)
-        test_mll = trainer.compute_mll(data.X_test, data.Y_test_noisy)
+            # Train
+            train_losses, val_losses = trainer.train(data)
 
-        # Predictions
-        y_pred_train, var_train = trainer.predict(data.X_train)
-        y_pred_val, var_val = trainer.predict(data.X_val)
-        y_pred_test, var_test = trainer.predict(data.X_test)
+            # Compute validation score for LR selection
+            val_mll = trainer.compute_mll(data.X_val, data.Y_val_noisy)
 
-        # Ranking metrics (on test set with true values)
-        tau, _ = kendalltau(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
-        spearman, _ = spearmanr(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
+            if len(lrs) > 1:
+                print(f"    LR={lr}: val_mll={val_mll:.4f}")
 
-        result = ModelResult(
-            gp_type="ExactGP",
-            fitness_fn=fn_name,
-            kernel_name=kernel_name,
-            seed=config.experiment.seed,
-            snr_data=config.data.snr,
-            snr_model=config.model.snr_model,
-            optimizer=config.trainer.exact_gp.optimizer,
-            lr=config.trainer.exact_gp.lr,
-            training_iters=config.trainer.exact_gp.training_iters,
-            signal_variance=data.signal_variance,
-            noise_variance_data=data.noise_variance,
-            noise_variance_model=trainer.get_noise_variance(),
-            lengthscale=trainer.get_lengthscale(),
-            train_mll=train_mll,
-            val_mll=val_mll,
-            test_mll=test_mll,
-            kendall_tau=tau,
-            spearman=spearman,
-            train_losses=train_losses,
-            val_losses=val_losses,
-            y_pred_train=y_pred_train,
-            y_pred_val=y_pred_val,
-            y_pred_test=y_pred_test,
-            var_train=var_train,
-            var_val=var_val,
-            var_test=var_test,
-            # Data fields for predictions.csv
-            X_train=data.X_train.numpy(),
-            X_val=data.X_val.numpy(),
-            X_test=data.X_test.numpy(),
-            y_true_train=data.Y_train_true.numpy(),
-            y_true_val=data.Y_val_true.numpy(),
-            y_true_test=data.Y_test_true.numpy(),
-            y_noisy_train=data.Y_train_noisy.numpy(),
-            y_noisy_val=data.Y_val_noisy.numpy(),
-            y_noisy_test=data.Y_test_noisy.numpy(),
-        )
+            # Check if this is the best LR so far
+            if val_mll > best_val_score:
+                best_val_score = val_mll
+                best_lr = lr
 
-        trainer.cleanup()
-        return result
+                # Compute full metrics for best model
+                train_mll = trainer.compute_mll(data.X_train, data.Y_train_noisy)
+                test_mll = trainer.compute_mll(data.X_test, data.Y_test_noisy)
 
-    except Exception as e:
-        print(f"ERROR training ExactGP with {kernel_name}: {e}")
-        import traceback
-        traceback.print_exc()
+                # Predictions
+                y_pred_train, var_train = trainer.predict(data.X_train)
+                y_pred_val, var_val = trainer.predict(data.X_val)
+                y_pred_test, var_test = trainer.predict(data.X_test)
 
-        # Log failure
+                # Ranking metrics (on test set with true values)
+                tau, _ = kendalltau(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
+                spearman, _ = spearmanr(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
+
+                best_result = ModelResult(
+                    gp_type="ExactGP",
+                    fitness_fn=fn_name,
+                    kernel_name=kernel_name,
+                    seed=config.experiment.seed,
+                    snr_data=config.data.snr,
+                    snr_model=config.model.snr_model,
+                    optimizer=config.trainer.exact_gp.optimizer,
+                    lr=lr,
+                    training_iters=config.trainer.exact_gp.training_iters,
+                    signal_variance=data.signal_variance,
+                    noise_variance_data=data.noise_variance,
+                    noise_variance_model=trainer.get_noise_variance(),
+                    lengthscale=trainer.get_lengthscale(),
+                    train_mll=train_mll,
+                    val_mll=val_mll,
+                    test_mll=test_mll,
+                    kendall_tau=tau,
+                    spearman=spearman,
+                    train_losses=train_losses,
+                    val_losses=val_losses,
+                    y_pred_train=y_pred_train,
+                    y_pred_val=y_pred_val,
+                    y_pred_test=y_pred_test,
+                    var_train=var_train,
+                    var_val=var_val,
+                    var_test=var_test,
+                    # Data fields for predictions.csv
+                    X_train=data.X_train.numpy(),
+                    X_val=data.X_val.numpy(),
+                    X_test=data.X_test.numpy(),
+                    y_true_train=data.Y_train_true.numpy(),
+                    y_true_val=data.Y_val_true.numpy(),
+                    y_true_test=data.Y_test_true.numpy(),
+                    y_noisy_train=data.Y_train_noisy.numpy(),
+                    y_noisy_val=data.Y_val_noisy.numpy(),
+                    y_noisy_test=data.Y_test_noisy.numpy(),
+                )
+
+            trainer.cleanup()
+
+        except Exception as e:
+            print(f"ERROR training ExactGP with {kernel_name}, lr={lr}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue  # Try next LR
+
+    # If all LRs failed, log failure
+    if best_result is None:
         failure = FailureRecord(
             gp_type="ExactGP",
             fitness_fn=fn_name,
@@ -231,113 +248,132 @@ def train_exactgp(data, kernel_name, config, device, fn_name, collector):
             seed=config.experiment.seed,
             snr_data=config.data.snr,
             snr_model=config.model.snr_model,
-            error_type=type(e).__name__,
-            error_message=str(e)[:500],
+            error_type="AllLRsFailed",
+            error_message=f"All LRs failed: {lrs}",
         )
         collector.add_failure(failure)
-        return None
+    elif len(lrs) > 1:
+        print(f"    Best LR: {best_lr} (val_mll={best_val_score:.4f})")
+
+    return best_result
 
 
 def train_pairwisegp(data, kernel_name, config, device, fn_name, collector):
-    """Train PairwiseGP model and return ModelResult."""
-    try:
-        # Build model
-        model = PairwiseGPModel(
-            kernel_name=kernel_name,
-            dimension=config.data.dimension,
-            snr_model=config.model.snr_model,
-            signal_variance=data.signal_variance,
-            device=device,
-        )
-        model.build(
-            X_train=data.X_train,
-            y_train=data.Y_train_noisy,
-            comparisons=data.comparisons_train,
-            X_pairwise=data.X_train_pairwise,
-        )
+    """Train PairwiseGP model with LR grid search and return best ModelResult."""
+    lrs = config.trainer.pairwise_gp.lrs
+    best_result = None
+    best_val_score = float('-inf')
+    best_lr = None
 
-        # Create trainer
-        trainer = PairwiseGPTrainer(
-            model=model,
-            training_iters=config.trainer.pairwise_gp.training_iters,
-            lr=config.trainer.pairwise_gp.lr,
-            optimizer_name=config.trainer.pairwise_gp.optimizer,
-        )
+    for lr in lrs:
+        try:
+            # Build model
+            model = PairwiseGPModel(
+                kernel_name=kernel_name,
+                dimension=config.data.dimension,
+                snr_model=config.model.snr_model,
+                signal_variance=data.signal_variance,
+                device=device,
+            )
+            model.build(
+                X_train=data.X_train,
+                y_train=data.Y_train_noisy,
+                comparisons=data.comparisons_train,
+                X_pairwise=data.X_train_pairwise,
+            )
 
-        # Train
-        train_losses, val_losses = trainer.train(data)
+            # Create trainer
+            trainer = PairwiseGPTrainer(
+                model=model,
+                training_iters=config.trainer.pairwise_gp.training_iters,
+                lr=lr,
+                optimizer_name=config.trainer.pairwise_gp.optimizer,
+            )
 
-        # Compute metrics
-        train_mll = trainer.compute_mll(
-            data.X_train, data.Y_train_noisy,
-            comparisons=data.comparisons_train,
-            X_pairwise=data.X_train_pairwise,
-        )
-        val_mll = trainer.compute_mll(
-            data.X_val, data.Y_val_noisy,
-            comparisons=data.comparisons_val,
-            X_pairwise=data.X_val_pairwise,
-        )
-        # For test, generate comparisons from true values
-        test_mll = trainer.compute_mll(data.X_test, data.Y_test_true)
+            # Train
+            train_losses, val_losses = trainer.train(data)
 
-        # Predictions
-        y_pred_train, var_train = trainer.predict(data.X_train)
-        y_pred_val, var_val = trainer.predict(data.X_val)
-        y_pred_test, var_test = trainer.predict(data.X_test)
+            # Compute validation score for LR selection
+            val_mll = trainer.compute_mll(
+                data.X_val, data.Y_val_noisy,
+                comparisons=data.comparisons_val,
+                X_pairwise=data.X_val_pairwise,
+            )
 
-        # Ranking metrics (on test set with true values)
-        tau, _ = kendalltau(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
-        spearman, _ = spearmanr(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
+            if len(lrs) > 1:
+                print(f"    LR={lr}: val_mll={val_mll:.4f}")
 
-        result = ModelResult(
-            gp_type="PairwiseGP",
-            fitness_fn=fn_name,
-            kernel_name=kernel_name,
-            seed=config.experiment.seed,
-            snr_data=config.data.snr,
-            snr_model=config.model.snr_model,
-            optimizer=config.trainer.pairwise_gp.optimizer,
-            lr=config.trainer.pairwise_gp.lr,
-            training_iters=config.trainer.pairwise_gp.training_iters,
-            signal_variance=data.signal_variance,
-            noise_variance_data=data.noise_variance,
-            noise_variance_model=np.nan,  # PairwiseGP has no explicit noise
-            lengthscale=trainer.get_lengthscale(),
-            train_mll=train_mll,
-            val_mll=val_mll,
-            test_mll=test_mll,
-            kendall_tau=tau,
-            spearman=spearman,
-            train_losses=train_losses,
-            val_losses=val_losses,
-            y_pred_train=y_pred_train,
-            y_pred_val=y_pred_val,
-            y_pred_test=y_pred_test,
-            var_train=var_train,
-            var_val=var_val,
-            var_test=var_test,
-            # Data fields for predictions.csv
-            X_train=data.X_train.numpy(),
-            X_val=data.X_val.numpy(),
-            X_test=data.X_test.numpy(),
-            y_true_train=data.Y_train_true.numpy(),
-            y_true_val=data.Y_val_true.numpy(),
-            y_true_test=data.Y_test_true.numpy(),
-            y_noisy_train=data.Y_train_noisy.numpy(),
-            y_noisy_val=data.Y_val_noisy.numpy(),
-            y_noisy_test=data.Y_test_noisy.numpy(),
-        )
+            # Check if this is the best LR so far
+            if val_mll > best_val_score:
+                best_val_score = val_mll
+                best_lr = lr
 
-        trainer.cleanup()
-        return result
+                # Compute full metrics for best model
+                train_mll = trainer.compute_mll(
+                    data.X_train, data.Y_train_noisy,
+                    comparisons=data.comparisons_train,
+                    X_pairwise=data.X_train_pairwise,
+                )
+                test_mll = trainer.compute_mll(data.X_test, data.Y_test_true)
 
-    except Exception as e:
-        print(f"ERROR training PairwiseGP with {kernel_name}: {e}")
-        import traceback
-        traceback.print_exc()
+                # Predictions
+                y_pred_train, var_train = trainer.predict(data.X_train)
+                y_pred_val, var_val = trainer.predict(data.X_val)
+                y_pred_test, var_test = trainer.predict(data.X_test)
 
-        # Log failure
+                # Ranking metrics (on test set with true values)
+                tau, _ = kendalltau(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
+                spearman, _ = spearmanr(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
+
+                best_result = ModelResult(
+                    gp_type="PairwiseGP",
+                    fitness_fn=fn_name,
+                    kernel_name=kernel_name,
+                    seed=config.experiment.seed,
+                    snr_data=config.data.snr,
+                    snr_model=config.model.snr_model,
+                    optimizer=config.trainer.pairwise_gp.optimizer,
+                    lr=lr,
+                    training_iters=config.trainer.pairwise_gp.training_iters,
+                    signal_variance=data.signal_variance,
+                    noise_variance_data=data.noise_variance,
+                    noise_variance_model=np.nan,  # PairwiseGP has no explicit noise
+                    lengthscale=trainer.get_lengthscale(),
+                    train_mll=train_mll,
+                    val_mll=val_mll,
+                    test_mll=test_mll,
+                    kendall_tau=tau,
+                    spearman=spearman,
+                    train_losses=train_losses,
+                    val_losses=val_losses,
+                    y_pred_train=y_pred_train,
+                    y_pred_val=y_pred_val,
+                    y_pred_test=y_pred_test,
+                    var_train=var_train,
+                    var_val=var_val,
+                    var_test=var_test,
+                    # Data fields for predictions.csv
+                    X_train=data.X_train.numpy(),
+                    X_val=data.X_val.numpy(),
+                    X_test=data.X_test.numpy(),
+                    y_true_train=data.Y_train_true.numpy(),
+                    y_true_val=data.Y_val_true.numpy(),
+                    y_true_test=data.Y_test_true.numpy(),
+                    y_noisy_train=data.Y_train_noisy.numpy(),
+                    y_noisy_val=data.Y_val_noisy.numpy(),
+                    y_noisy_test=data.Y_test_noisy.numpy(),
+                )
+
+            trainer.cleanup()
+
+        except Exception as e:
+            print(f"ERROR training PairwiseGP with {kernel_name}, lr={lr}: {e}")
+            import traceback
+            traceback.print_exc()
+            continue  # Try next LR
+
+    # If all LRs failed, log failure
+    if best_result is None:
         failure = FailureRecord(
             gp_type="PairwiseGP",
             fitness_fn=fn_name,
@@ -345,11 +381,14 @@ def train_pairwisegp(data, kernel_name, config, device, fn_name, collector):
             seed=config.experiment.seed,
             snr_data=config.data.snr,
             snr_model=config.model.snr_model,
-            error_type=type(e).__name__,
-            error_message=str(e)[:500],
+            error_type="AllLRsFailed",
+            error_message=f"All LRs failed: {lrs}",
         )
         collector.add_failure(failure)
-        return None
+    elif len(lrs) > 1:
+        print(f"    Best LR: {best_lr} (val_mll={best_val_score:.4f})")
+
+    return best_result
 
 
 if __name__ == "__main__":

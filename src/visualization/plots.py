@@ -170,12 +170,13 @@ def _load_model_result(models_dir: Path, gp_type: str, fitness_fn: str) -> Optio
         pred_file = model_dir / "predictions.csv"
         if pred_file.exists():
             pred_df = pd.read_csv(pred_file)
-            y_pred_train = pred_df[pred_df['fold'] == 'train']['y_pred'].values
-            y_pred_val = pred_df[pred_df['fold'] == 'val']['y_pred'].values
-            y_pred_test = pred_df[pred_df['fold'] == 'test']['y_pred'].values
-            var_train = pred_df[pred_df['fold'] == 'train']['variance'].values
-            var_val = pred_df[pred_df['fold'] == 'val']['variance'].values
-            var_test = pred_df[pred_df['fold'] == 'test']['variance'].values
+            # fold column is integer: 0=train, 1=val, 2=test
+            y_pred_train = pred_df[pred_df['fold'] == 0]['y_pred'].values
+            y_pred_val = pred_df[pred_df['fold'] == 1]['y_pred'].values
+            y_pred_test = pred_df[pred_df['fold'] == 2]['y_pred'].values
+            var_train = pred_df[pred_df['fold'] == 0]['variance'].values
+            var_val = pred_df[pred_df['fold'] == 1]['variance'].values
+            var_test = pred_df[pred_df['fold'] == 2]['variance'].values
         else:
             y_pred_train = y_pred_val = y_pred_test = None
             var_train = var_val = var_test = None
