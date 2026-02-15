@@ -15,7 +15,7 @@ from .comparisons import get_comparisons
 @dataclass
 class ExperimentData:
     """
-    Handles all data generation, splitting, and noise application.
+    Handles all data generation, splitting, standardization, and noise application.
 
     This class encapsulates all data-related operations that were previously
     scattered in run_experiments.py.
@@ -30,16 +30,22 @@ class ExperimentData:
             snr=10.0,
             seed=42,
         )
-        data.prepare()  # Runs sample(), noise(), compute_comparisons()
+        data.prepare()  # Runs sample(), standardize(), noise(), compute_comparisons()
 
     Attributes (after prepare()):
         X_train, X_val, X_test: Input tensors
-        Y_train_true, Y_val_true, Y_test_true: Ground truth outputs
-        Y_train_noisy, Y_val_noisy, Y_test_noisy: Noisy outputs
-        signal_variance: Variance of the signal (computed from Y_train_true)
-        noise_variance: Computed noise variance (sigma^2_signal / SNR)
+        Y_train_true, Y_val_true, Y_test_true: Standardized ground truth outputs
+        Y_train_noisy, Y_val_noisy, Y_test_noisy: Standardized noisy outputs
+        y_mean, y_std: Standardization parameters (computed from original Y_train)
+        signal_variance: Variance of standardized signal (~1.0 after standardization)
+        noise_variance: Computed noise variance (signal_variance / SNR)
         comparisons_train, X_train_pairwise: Pairwise data for training
         comparisons_val, X_val_pairwise: Pairwise data for validation
+
+    Note:
+        After standardization, Y values have mean=0 and std=1. Use
+        destandardize_predictions() to convert GP predictions back to
+        original scale for interpretation.
     """
 
     # Constructor arguments
@@ -64,6 +70,10 @@ class ExperimentData:
     X_train_np: np.ndarray = field(init=False, default=None)
     X_val_np: np.ndarray = field(init=False, default=None)
     X_test_np: np.ndarray = field(init=False, default=None)
+
+    # Computed after standardize()
+    y_mean: float = field(init=False, default=None)
+    y_std: float = field(init=False, default=None)
 
     # Computed after noise()
     Y_train_noisy: torch.Tensor = field(init=False, default=None)
@@ -126,6 +136,30 @@ class ExperimentData:
 
         return self
 
+    def standardize(self) -> 'ExperimentData':
+        """
+        Standardize Y values to have zero mean and unit variance.
+
+        Computes mean and std from training data, then applies to all splits.
+        This ensures the GP's zero-mean prior is appropriate and makes
+        hyperparameters consistent across different fitness functions.
+
+        Must be called after sample() and before noise().
+
+        Returns:
+            self for method chaining.
+        """
+        # Compute mean and std from training data only
+        self.y_mean = self.Y_train_true.mean().item()
+        self.y_std = self.Y_train_true.std().item()
+
+        # Standardize all splits using training statistics
+        self.Y_train_true = (self.Y_train_true - self.y_mean) / self.y_std
+        self.Y_val_true = (self.Y_val_true - self.y_mean) / self.y_std
+        self.Y_test_true = (self.Y_test_true - self.y_mean) / self.y_std
+
+        return self
+
     def noise(self) -> 'ExperimentData':
         """
         Apply SNR-based noise to all splits.
@@ -135,10 +169,14 @@ class ExperimentData:
 
         If SNR is infinity, no noise is applied (y_noisy = y_true).
 
+        Note: If standardize() was called, signal_variance will be ~1.0,
+        so noise_variance ≈ 1/SNR directly.
+
         Returns:
             self for method chaining.
         """
         # Compute signal variance from training data
+        # After standardization, this will be ~1.0
         self.signal_variance = self.Y_train_true.var().item()
 
         if self.snr == float('inf'):
@@ -189,8 +227,10 @@ class ExperimentData:
             Dictionary with 'train', 'val', 'test' keys, each containing:
                 - fold: int (0=train, 1=val, 2=test)
                 - X: input data
-                - y_true: ground truth
-                - y_noisy: noisy observations
+                - y_true: ground truth (standardized)
+                - y_noisy: noisy observations (standardized)
+                - y_true_original: ground truth in original scale
+                - y_noisy_original: noisy observations in original scale
         """
         def _build_df(
             fold: int,
@@ -198,11 +238,15 @@ class ExperimentData:
             Y_true: torch.Tensor,
             Y_noisy: torch.Tensor
         ) -> Dict[str, Any]:
+            y_true_np = Y_true.numpy().flatten()
+            y_noisy_np = Y_noisy.numpy().flatten()
             return {
                 'fold': fold,
                 'X': X.numpy().flatten() if self.dimension == 1 else X.numpy().tolist(),
-                'y_true': Y_true.numpy().flatten(),
-                'y_noisy': Y_noisy.numpy().flatten(),
+                'y_true': y_true_np,
+                'y_noisy': y_noisy_np,
+                'y_true_original': self.destandardize_y(y_true_np),
+                'y_noisy_original': self.destandardize_y(y_noisy_np),
             }
 
         return {
@@ -211,16 +255,53 @@ class ExperimentData:
             'test': _build_df(2, self.X_test, self.Y_test_true, self.Y_test_noisy),
         }
 
+    def destandardize_predictions(
+        self,
+        mean: np.ndarray,
+        variance: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Convert predictions from standardized scale back to original scale.
+
+        Args:
+            mean: Predicted means in standardized scale.
+            variance: Predicted variances in standardized scale.
+
+        Returns:
+            Tuple of (mean_original, variance_original).
+        """
+        if self.y_mean is None or self.y_std is None:
+            # No standardization was applied
+            return mean, variance
+
+        mean_original = mean * self.y_std + self.y_mean
+        variance_original = variance * (self.y_std ** 2)
+        return mean_original, variance_original
+
+    def destandardize_y(self, y: np.ndarray) -> np.ndarray:
+        """
+        Convert Y values from standardized scale back to original scale.
+
+        Args:
+            y: Y values in standardized scale.
+
+        Returns:
+            Y values in original scale.
+        """
+        if self.y_mean is None or self.y_std is None:
+            return y
+        return y * self.y_std + self.y_mean
+
     def prepare(self) -> 'ExperimentData':
         """
         Convenience method to run all preparation steps.
 
-        Equivalent to calling sample().noise().compute_comparisons().
+        Equivalent to calling sample().standardize().noise().compute_comparisons().
 
         Returns:
             self for method chaining.
         """
-        return self.sample().noise().compute_comparisons()
+        return self.sample().standardize().noise().compute_comparisons()
 
     @property
     def n_train_actual(self) -> int:

@@ -50,12 +50,22 @@ trainer:
     # Use 'lrs' for LR grid search, or 'lr' for single value
     lrs: [0.01, 0.1, 0.5]
     optimizer: Adam
+    # Early stopping: stop when relative improvement < threshold for patience iters
+    early_stopping: true
+    patience: 40
+    min_relative_delta: 0.001  # 0.1% improvement threshold
+    check_interval: 10
 
   pairwise_gp:
     training_iters: 2000
     # Use 'lrs' for LR grid search, or 'lr' for single value
     lrs: [0.0001, 0.001, 0.01]
     optimizer: Adam
+    # Early stopping: stop when relative improvement < threshold for patience iters
+    early_stopping: true
+    patience: 50
+    min_relative_delta: 0.001  # 0.1% improvement threshold
+    check_interval: 10
 
 # ============================================================
 # EXPERIMENT CONFIGURATION

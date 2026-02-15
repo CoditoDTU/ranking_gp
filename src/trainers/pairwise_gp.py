@@ -3,6 +3,7 @@ PairwiseGP trainer.
 
 Uses PairwiseGPModel wrapper with outputscale prior.
 """
+import copy
 import torch
 import numpy as np
 from typing import Tuple, List
@@ -22,7 +23,7 @@ class PairwiseGPTrainer(BaseTrainer):
     """
     Trainer for PairwiseGP models.
 
-    Handles training loop with validation MLL tracking using proxy models.
+    Handles training loop with validation MLL tracking and early stopping.
     """
 
     def __init__(
@@ -31,6 +32,10 @@ class PairwiseGPTrainer(BaseTrainer):
         training_iters: int,
         lr: float,
         optimizer_name: str,
+        early_stopping: bool = True,
+        patience: int = 50,
+        min_relative_delta: float = 0.001,
+        check_interval: int = 10,
     ):
         """
         Initialize PairwiseGP trainer.
@@ -40,13 +45,23 @@ class PairwiseGPTrainer(BaseTrainer):
             training_iters: Number of training iterations.
             lr: Learning rate.
             optimizer_name: Name of optimizer.
+            early_stopping: Whether to use early stopping.
+            patience: Iterations without improvement before stopping.
+            min_relative_delta: Minimum relative improvement threshold.
+            check_interval: Check validation every N iterations.
         """
         super().__init__(model, training_iters, lr, optimizer_name)
         self._mll = None
+        self.early_stopping = early_stopping
+        self.patience = patience
+        self.min_relative_delta = min_relative_delta
+        self.check_interval = check_interval
+        self.stopped_early = False
+        self.best_iter = 0
 
     def train(self, data: ExperimentData) -> Tuple[List[float], List[float]]:
         """
-        Train PairwiseGP model.
+        Train PairwiseGP model with optional early stopping.
 
         Args:
             data: ExperimentData with prepared train/val splits and comparisons.
@@ -78,12 +93,19 @@ class PairwiseGPTrainer(BaseTrainer):
             consolidate_atol=0.0,
         ).double()
         val_proxy.to(device)
-        val_mll = PairwiseLaplaceMarginalLogLikelihood(val_proxy.likelihood, val_proxy)
+        val_mll_fn = PairwiseLaplaceMarginalLogLikelihood(val_proxy.likelihood, val_proxy)
 
         # Training loop
         self.model.model.train()
         self.losses = []
         self.val_losses = []
+
+        # Early stopping state
+        best_val_loss = float('inf')
+        best_model_state = None
+        patience_counter = 0
+        self.stopped_early = False
+        self.best_iter = 0
 
         for i in range(self.training_iters):
             if "bfgs" in self.optimizer_name.lower():
@@ -103,23 +125,50 @@ class PairwiseGPTrainer(BaseTrainer):
 
             self.losses.append(loss.item())
 
-            # Compute validation MLL with current hyperparameters
-            # Use strict=False to ignore prior parameters that don't exist in val_proxy
+            # Compute validation loss with current hyperparameters
             val_proxy.covar_module.load_state_dict(
                 self.model.model.covar_module.state_dict(), strict=False
             )
             val_proxy.train()
             with torch.no_grad():
                 val_output = val_proxy(val_proxy.datapoints)
-                val_loss = val_mll(val_output, val_proxy.train_targets).item()
+                # Negate to match train_loss convention: lower is better
+                val_loss = -val_mll_fn(val_output, val_proxy.train_targets).item()
             self.val_losses.append(val_loss)
+
+            # Early stopping check
+            if self.early_stopping and (i + 1) % self.check_interval == 0:
+                # Relative improvement: positive means we improved (val_loss decreased)
+                if best_val_loss != float('inf'):
+                    relative_improvement = (best_val_loss - val_loss) / abs(best_val_loss)
+                else:
+                    relative_improvement = float('inf')  # First check always counts
+
+                if relative_improvement > self.min_relative_delta:
+                    # Improved - save checkpoint
+                    best_val_loss = val_loss
+                    best_model_state = copy.deepcopy(self.model.model.covar_module.state_dict())
+                    patience_counter = 0
+                    self.best_iter = i + 1
+                else:
+                    patience_counter += self.check_interval
+                    if patience_counter >= self.patience:
+                        print(f"  Early stopping at iter {i+1} (best was iter {self.best_iter})")
+                        self.stopped_early = True
+                        break
 
             if (i + 1) % 20 == 0:
                 ls = self.model.get_lengthscale()
-                print(f"  Iter {i+1} - Loss: {loss.item():.4f} - Lengthscale: {ls:.3f}")
+                print(f"  Iter {i+1} - Loss: {loss.item():.4f} - Val: {val_loss:.4f} - LS: {ls:.3f}")
+
+        # Restore best model if early stopping was used and we have a checkpoint
+        if self.early_stopping and best_model_state is not None:
+            self.model.model.covar_module.load_state_dict(best_model_state)
+            if not self.stopped_early:
+                print(f"  Training complete. Restored best model from iter {self.best_iter}")
 
         # Cleanup validation proxy
-        del val_proxy, val_mll, val_kernel
+        del val_proxy, val_mll_fn, val_kernel
 
         return self.losses, self.val_losses
 

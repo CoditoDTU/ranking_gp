@@ -56,12 +56,12 @@ class PairwiseGPModel(BaseModelWrapper):
         # Gamma(alpha, beta) has mean = alpha / beta
         alpha = 2.0
         beta = alpha / self.signal_variance
-        outputscale_prior = GammaPrior(concentration=alpha, rate=beta)
+        #outputscale_prior = GammaPrior(concentration=alpha, rate=beta)
 
         kernel = build_kernel(
             self.kernel_name,
-            self.dimension,
-            outputscale_prior=outputscale_prior
+            self.dimension
+            #outputscale_prior=outputscale_prior
         )
 
         self.model = PairwiseGP(

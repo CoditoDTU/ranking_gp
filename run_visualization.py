@@ -3,7 +3,7 @@
 Visualization runner for GP experiments.
 
 Generates plots from saved experiment results without re-running experiments.
-Updated to work with new result structure (ModelResult, models/ directory).
+All data is loaded directly from CSV files - no data regeneration needed.
 
 Usage:
     python run_visualization.py                        # Plot latest experiment
@@ -14,11 +14,10 @@ Usage:
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
 
+import argparse
 import sys
 from pathlib import Path
 
-from src.config import create_visualization_parser, load_config
-from src.data import ExperimentData
 from src.visualization import plot_from_saved_results
 
 
@@ -52,28 +51,13 @@ def get_fitness_functions_from_experiment(exp_dir: Path) -> list:
     return sorted(fitness_fns)
 
 
-def load_experiment_config(exp_dir: Path, fallback_config_path: Path):
-    """Load config from experiment or fallback to default."""
-    # Check for saved config in experiment directory
-    exp_config = exp_dir / "config.yaml"
-    if exp_config.exists():
-        return load_config(exp_config)
-
-    # Try config_new.yaml in experiment directory
-    exp_config_new = exp_dir / "config_new.yaml"
-    if exp_config_new.exists():
-        return load_config(exp_config_new)
-
-    # Fallback to provided config
-    return load_config(fallback_config_path)
-
-
-def visualize_experiment(exp_dir: Path, fallback_config_path: Path) -> bool:
+def visualize_experiment(exp_dir: Path) -> bool:
     """Generate plots for a single experiment directory.
+
+    All data is loaded directly from saved CSV files - no regeneration needed.
 
     Args:
         exp_dir: Path to the experiment directory.
-        fallback_config_path: Path to base config.yaml (used if no saved config found).
 
     Returns:
         True if plots were generated, False if required files were missing.
@@ -88,9 +72,6 @@ def visualize_experiment(exp_dir: Path, fallback_config_path: Path) -> bool:
 
     print(f"  Found {len(fitness_functions)} fitness functions: {', '.join(fitness_functions)}")
 
-    # Load config
-    config = load_experiment_config(exp_dir, fallback_config_path)
-
     plots_dir = exp_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
 
@@ -98,24 +79,11 @@ def visualize_experiment(exp_dir: Path, fallback_config_path: Path) -> bool:
     for fn_name in fitness_functions:
         print(f"  Plotting {fn_name}...", end=" ")
 
-        # Recreate data for plotting (need X/Y values)
         try:
-            data = ExperimentData(
-                fitness_fn_name=fn_name,
-                dimension=config.data.dimension,
-                n_train=config.data.n_train,
-                n_test=config.data.n_test,
-                val_fraction=config.data.val_fraction,
-                snr=config.data.snr,
-                seed=config.experiment.seed,
-            )
-            data.prepare()
-
-            # Generate plot
+            # Generate plot - all data loaded from CSV, no regeneration needed
             pdf_path = plot_from_saved_results(
                 experiment_dir=exp_dir,
                 fitness_fn=fn_name,
-                data=data,
             )
 
             if pdf_path:
@@ -131,7 +99,7 @@ def visualize_experiment(exp_dir: Path, fallback_config_path: Path) -> bool:
     return generated > 0
 
 
-def visualize_grid_search(grid_dir: Path, fallback_config_path: Path):
+def visualize_grid_search(grid_dir: Path):
     """Generate plots for all experiments in a grid search."""
     runs_dir = grid_dir / "runs"
     if not runs_dir.exists():
@@ -143,19 +111,22 @@ def visualize_grid_search(grid_dir: Path, fallback_config_path: Path):
 
     generated = 0
     for exp_dir in exp_dirs:
-        if visualize_experiment(exp_dir, fallback_config_path):
+        if visualize_experiment(exp_dir):
             generated += 1
 
     print(f"\n--- Grid Search Visualization Complete: {generated}/{len(exp_dirs)} experiments plotted ---")
 
 
 def main():
-    parser = create_visualization_parser()
+    parser = argparse.ArgumentParser(description="Generate plots from saved experiment results")
+    parser.add_argument("--id", type=str, default=None,
+                        help="Experiment ID to plot (e.g., exp_20260209_123)")
+    parser.add_argument("--all", action="store_true",
+                        help="Plot all experiments")
     parser.add_argument("--grid_dir", type=str, default=None,
                         help="Grid search directory to plot")
     args = parser.parse_args()
 
-    config_path = Path(args.config)
     experiments_dir = Path("experiments")
 
     if args.grid_dir:
@@ -164,7 +135,7 @@ def main():
         if not grid_dir.exists():
             print(f"Grid directory not found: {grid_dir}")
             sys.exit(1)
-        visualize_grid_search(grid_dir, config_path)
+        visualize_grid_search(grid_dir)
 
     elif args.all:
         # Plot all experiments
@@ -183,7 +154,7 @@ def main():
 
         generated = 0
         for exp_dir in exp_dirs:
-            if visualize_experiment(exp_dir, config_path):
+            if visualize_experiment(exp_dir):
                 generated += 1
 
         print(f"\n--- Visualization Complete: {generated}/{len(exp_dirs)} experiments plotted ---")
@@ -202,7 +173,7 @@ def main():
                 print(e)
                 sys.exit(1)
 
-        if not visualize_experiment(exp_dir, config_path):
+        if not visualize_experiment(exp_dir):
             print("Error: No plots could be generated.")
             sys.exit(1)
 

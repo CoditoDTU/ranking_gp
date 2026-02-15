@@ -14,6 +14,8 @@ from .config import (
     SelectionCriterion,
     load_config,
     load_config_with_overrides,
+    config_to_dict,
+    save_config,
 )
 
 # CLI parsers
@@ -33,6 +35,8 @@ __all__ = [
     'SelectionCriterion',
     'load_config',
     'load_config_with_overrides',
+    'config_to_dict',
+    'save_config',
     # CLI
     'create_experiment_parser',
     'create_visualization_parser',

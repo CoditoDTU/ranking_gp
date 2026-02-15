@@ -5,7 +5,6 @@ import torch
 import gpytorch
 import numpy as np
 from typing import Tuple, Optional
-from gpytorch.priors import GammaPrior
 from gpytorch.constraints import GreaterThan
 from gpytorch.likelihoods import GaussianLikelihood
 
@@ -20,7 +19,7 @@ class FlexibleExactGPModel(gpytorch.models.ExactGP):
 
     def __init__(self, train_x, train_y, likelihood, covar_module):
         super().__init__(train_x, train_y, likelihood)
-        self.mean_module = gpytorch.means.ConstantMean()
+        self.mean_module = gpytorch.means.ZeroMean()#ConstantMean()
         self.covar_module = covar_module
 
     def forward(self, x):
@@ -64,16 +63,19 @@ class ExactGPModel(BaseModelWrapper):
         X = X_train.to(self.device, dtype=torch.float64)
         y = y_train.to(self.device, dtype=torch.float64).squeeze(-1)
 
-        # GammaPrior on noise: mean = expected_noise_variance
-        # Gamma(alpha, beta) has mean = alpha / beta
-        # So beta = alpha / expected_mean
-        alpha = 2.0
-        beta = alpha / self.expected_noise_variance
+        # Estimate initial noise from data variance as a heuristic
+        # This helps when snr_model doesn't match snr_data
+        data_variance = y.var().item()
+        initial_noise = max(data_variance * 0.5, self.expected_noise_variance)
 
+        # No prior on noise - let the data speak
+        # The MLL objective naturally regularizes noise estimation
         self.likelihood = GaussianLikelihood(
-            noise_prior=GammaPrior(concentration=alpha, rate=beta),
             noise_constraint=GreaterThan(1e-6),
         ).to(self.device, dtype=torch.float64)
+
+        # Initialize noise to a reasonable starting point
+        self.likelihood.noise = initial_noise
 
         kernel = build_kernel(self.kernel_name, self.dimension)
         self.model = FlexibleExactGPModel(X, y, self.likelihood, kernel)
@@ -89,11 +91,16 @@ class ExactGPModel(BaseModelWrapper):
         """
         Predict with no gradients in eval mode.
 
+        Returns PREDICTIVE variance (includes observation noise), not just
+        posterior variance. This is critical for calibrated uncertainty:
+        - Posterior variance Var[f(x)] → uncertainty about the latent function
+        - Predictive variance Var[y] = Var[f(x)] + σ²_noise → uncertainty about observations
+
         Args:
             X: Input tensor.
 
         Returns:
-            Tuple of (mean, variance) as numpy arrays.
+            Tuple of (mean, predictive_variance) as numpy arrays.
         """
         self.model.eval()
         self.likelihood.eval()
@@ -101,8 +108,14 @@ class ExactGPModel(BaseModelWrapper):
 
         with torch.no_grad(), gpytorch.settings.fast_pred_var():
             posterior = self.model(X_device)
-            mean = posterior.mean.cpu().numpy()
-            variance = posterior.variance.cpu().numpy()
+            #mean = posterior.mean.cpu().numpy() # Original
+            #variance = posterior.variance.cpu().numpy()
+            # Pass through likelihood to get predictive distribution p(y*|x*, D)
+            # This adds observation noise: Var[y*] = Var[f(x*)] + σ²_noise
+            
+            predictive = self.likelihood(posterior) # predictive
+            mean = predictive.mean.cpu().numpy() 
+            variance = predictive.variance.cpu().numpy()
 
         return mean, variance
 

@@ -42,6 +42,11 @@ class GPTrainerSettings:
     training_iters: int
     lrs: List[float]  # List of learning rates for grid search
     optimizer: str
+    # Early stopping parameters
+    early_stopping: bool = True
+    patience: int = 50  # Iterations without improvement before stopping
+    min_relative_delta: float = 0.001  # 0.1% relative improvement threshold
+    check_interval: int = 10  # Check every N iterations
 
     @property
     def lr(self) -> float:
@@ -121,6 +126,17 @@ def load_config(config_path: str) -> Config:
         else:
             return [0.01]  # default
 
+    def parse_trainer_settings(trainer_raw: dict) -> GPTrainerSettings:
+        return GPTrainerSettings(
+            training_iters=trainer_raw['training_iters'],
+            lrs=parse_lrs(trainer_raw),
+            optimizer=trainer_raw['optimizer'],
+            early_stopping=trainer_raw.get('early_stopping', True),
+            patience=trainer_raw.get('patience', 50),
+            min_relative_delta=trainer_raw.get('min_relative_delta', 0.001),
+            check_interval=trainer_raw.get('check_interval', 10),
+        )
+
     return Config(
         data=DataConfig(
             fitness_functions=raw['data']['fitness_functions'],
@@ -135,16 +151,8 @@ def load_config(config_path: str) -> Config:
             snr_model=snr_model,
         ),
         trainer=TrainerConfig(
-            exact_gp=GPTrainerSettings(
-                training_iters=raw['trainer']['exact_gp']['training_iters'],
-                lrs=parse_lrs(raw['trainer']['exact_gp']),
-                optimizer=raw['trainer']['exact_gp']['optimizer'],
-            ),
-            pairwise_gp=GPTrainerSettings(
-                training_iters=raw['trainer']['pairwise_gp']['training_iters'],
-                lrs=parse_lrs(raw['trainer']['pairwise_gp']),
-                optimizer=raw['trainer']['pairwise_gp']['optimizer'],
-            ),
+            exact_gp=parse_trainer_settings(raw['trainer']['exact_gp']),
+            pairwise_gp=parse_trainer_settings(raw['trainer']['pairwise_gp']),
         ),
         experiment=ExperimentSettings(
             seed=raw['experiment']['seed'],
@@ -243,3 +251,76 @@ def load_config_with_overrides(config_path: str, overrides: Dict[str, Any] = Non
         config.trainer.pairwise_gp.training_iters = overrides['pairwise_training_iters']
 
     return config
+
+
+def config_to_dict(config: Config) -> Dict[str, Any]:
+    """
+    Convert Config object to a dictionary suitable for YAML serialization.
+
+    Args:
+        config: Config object to serialize.
+
+    Returns:
+        Dictionary representation of the config.
+    """
+    # Handle inf SNR values
+    snr_value = config.data.snr
+    if snr_value == float('inf'):
+        snr_value = 'inf'
+
+    snr_model_value = config.model.snr_model
+    if snr_model_value == float('inf'):
+        snr_model_value = 'inf'
+
+    return {
+        'data': {
+            'fitness_functions': config.data.fitness_functions,
+            'dimension': config.data.dimension,
+            'n_train': config.data.n_train,
+            'n_test': config.data.n_test,
+            'val_fraction': config.data.val_fraction,
+            'snr': snr_value,
+        },
+        'model': {
+            'kernels': config.model.kernels,
+            'snr_model': snr_model_value,
+        },
+        'trainer': {
+            'exact_gp': {
+                'training_iters': config.trainer.exact_gp.training_iters,
+                'lrs': config.trainer.exact_gp.lrs,
+                'optimizer': config.trainer.exact_gp.optimizer,
+                'early_stopping': config.trainer.exact_gp.early_stopping,
+                'patience': config.trainer.exact_gp.patience,
+                'min_relative_delta': config.trainer.exact_gp.min_relative_delta,
+                'check_interval': config.trainer.exact_gp.check_interval,
+            },
+            'pairwise_gp': {
+                'training_iters': config.trainer.pairwise_gp.training_iters,
+                'lrs': config.trainer.pairwise_gp.lrs,
+                'optimizer': config.trainer.pairwise_gp.optimizer,
+                'early_stopping': config.trainer.pairwise_gp.early_stopping,
+                'patience': config.trainer.pairwise_gp.patience,
+                'min_relative_delta': config.trainer.pairwise_gp.min_relative_delta,
+                'check_interval': config.trainer.pairwise_gp.check_interval,
+            },
+        },
+        'experiment': {
+            'seed': config.experiment.seed,
+            'selection_criterion': config.experiment.selection_criterion.value,
+            'output_dir': config.experiment.output_dir,
+        },
+    }
+
+
+def save_config(config: Config, path: str) -> None:
+    """
+    Save Config object to a YAML file.
+
+    Args:
+        config: Config object to save.
+        path: Path to output YAML file.
+    """
+    config_dict = config_to_dict(config)
+    with open(path, 'w') as f:
+        yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)

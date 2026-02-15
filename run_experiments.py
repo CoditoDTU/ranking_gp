@@ -24,7 +24,7 @@ from pathlib import Path
 from datetime import datetime
 from scipy.stats import kendalltau, spearmanr
 
-from src.config import create_experiment_parser, load_config_with_overrides
+from src.config import create_experiment_parser, load_config_with_overrides, save_config
 from src.data import ExperimentData
 from src.models import ExactGPModel, PairwiseGPModel
 from src.trainers import ExactGPTrainer, PairwiseGPTrainer
@@ -61,6 +61,9 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = Path(config.experiment.output_dir) / f"exp_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Save config used (includes CLI overrides) ---
+    save_config(config, output_dir / "config.yaml")
 
     # --- Setup results collector ---
     collector = ResultsCollector(output_dir, criterion=config.experiment.selection_criterion)
@@ -163,6 +166,10 @@ def train_exactgp(data, kernel_name, config, device, fn_name, collector):
                 training_iters=config.trainer.exact_gp.training_iters,
                 lr=lr,
                 optimizer_name=config.trainer.exact_gp.optimizer,
+                early_stopping=config.trainer.exact_gp.early_stopping,
+                patience=config.trainer.exact_gp.patience,
+                min_relative_delta=config.trainer.exact_gp.min_relative_delta,
+                check_interval=config.trainer.exact_gp.check_interval,
             )
 
             # Train
@@ -183,14 +190,20 @@ def train_exactgp(data, kernel_name, config, device, fn_name, collector):
                 train_mll = trainer.compute_mll(data.X_train, data.Y_train_noisy)
                 test_mll = trainer.compute_mll(data.X_test, data.Y_test_noisy)
 
-                # Predictions
+                # Predictions (in standardized scale)
                 y_pred_train, var_train = trainer.predict(data.X_train)
                 y_pred_val, var_val = trainer.predict(data.X_val)
                 y_pred_test, var_test = trainer.predict(data.X_test)
 
                 # Ranking metrics (on test set with true values)
+                # Note: Kendall tau and Spearman are rank-based, so scale doesn't matter
                 tau, _ = kendalltau(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
                 spearman, _ = spearmanr(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
+
+                # De-standardize predictions for storage/visualization
+                y_pred_train, var_train = data.destandardize_predictions(y_pred_train, var_train)
+                y_pred_val, var_val = data.destandardize_predictions(y_pred_val, var_val)
+                y_pred_test, var_test = data.destandardize_predictions(y_pred_test, var_test)
 
                 best_result = ModelResult(
                     gp_type="ExactGP",
@@ -219,16 +232,16 @@ def train_exactgp(data, kernel_name, config, device, fn_name, collector):
                     var_train=var_train,
                     var_val=var_val,
                     var_test=var_test,
-                    # Data fields for predictions.csv
+                    # Data fields for predictions.csv (de-standardized)
                     X_train=data.X_train.numpy(),
                     X_val=data.X_val.numpy(),
                     X_test=data.X_test.numpy(),
-                    y_true_train=data.Y_train_true.numpy(),
-                    y_true_val=data.Y_val_true.numpy(),
-                    y_true_test=data.Y_test_true.numpy(),
-                    y_noisy_train=data.Y_train_noisy.numpy(),
-                    y_noisy_val=data.Y_val_noisy.numpy(),
-                    y_noisy_test=data.Y_test_noisy.numpy(),
+                    y_true_train=data.destandardize_y(data.Y_train_true.numpy()),
+                    y_true_val=data.destandardize_y(data.Y_val_true.numpy()),
+                    y_true_test=data.destandardize_y(data.Y_test_true.numpy()),
+                    y_noisy_train=data.destandardize_y(data.Y_train_noisy.numpy()),
+                    y_noisy_val=data.destandardize_y(data.Y_val_noisy.numpy()),
+                    y_noisy_test=data.destandardize_y(data.Y_test_noisy.numpy()),
                 )
 
             trainer.cleanup()
@@ -288,6 +301,10 @@ def train_pairwisegp(data, kernel_name, config, device, fn_name, collector):
                 training_iters=config.trainer.pairwise_gp.training_iters,
                 lr=lr,
                 optimizer_name=config.trainer.pairwise_gp.optimizer,
+                early_stopping=config.trainer.pairwise_gp.early_stopping,
+                patience=config.trainer.pairwise_gp.patience,
+                min_relative_delta=config.trainer.pairwise_gp.min_relative_delta,
+                check_interval=config.trainer.pairwise_gp.check_interval,
             )
 
             # Train
@@ -316,15 +333,19 @@ def train_pairwisegp(data, kernel_name, config, device, fn_name, collector):
                 )
                 test_mll = trainer.compute_mll(data.X_test, data.Y_test_true)
 
-                # Predictions
+                # Predictions (latent utilities - NOT de-standardized since they're
+                # in a different space than Y values)
                 y_pred_train, var_train = trainer.predict(data.X_train)
                 y_pred_val, var_val = trainer.predict(data.X_val)
                 y_pred_test, var_test = trainer.predict(data.X_test)
 
                 # Ranking metrics (on test set with true values)
+                # Note: Kendall tau and Spearman are rank-based, so scale doesn't matter
                 tau, _ = kendalltau(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
                 spearman, _ = spearmanr(data.Y_test_true.numpy().flatten(), y_pred_test.flatten())
 
+
+            
                 best_result = ModelResult(
                     gp_type="PairwiseGP",
                     fitness_fn=fn_name,
@@ -352,16 +373,16 @@ def train_pairwisegp(data, kernel_name, config, device, fn_name, collector):
                     var_train=var_train,
                     var_val=var_val,
                     var_test=var_test,
-                    # Data fields for predictions.csv
+                    # Data fields for predictions.csv (de-standardized)
                     X_train=data.X_train.numpy(),
                     X_val=data.X_val.numpy(),
                     X_test=data.X_test.numpy(),
-                    y_true_train=data.Y_train_true.numpy(),
-                    y_true_val=data.Y_val_true.numpy(),
-                    y_true_test=data.Y_test_true.numpy(),
-                    y_noisy_train=data.Y_train_noisy.numpy(),
-                    y_noisy_val=data.Y_val_noisy.numpy(),
-                    y_noisy_test=data.Y_test_noisy.numpy(),
+                    y_true_train=data.destandardize_y(data.Y_train_true.numpy()),
+                    y_true_val=data.destandardize_y(data.Y_val_true.numpy()),
+                    y_true_test=data.destandardize_y(data.Y_test_true.numpy()),
+                    y_noisy_train=data.destandardize_y(data.Y_train_noisy.numpy()),
+                    y_noisy_val=data.destandardize_y(data.Y_val_noisy.numpy()),
+                    y_noisy_test=data.destandardize_y(data.Y_test_noisy.numpy()),
                 )
 
             trainer.cleanup()

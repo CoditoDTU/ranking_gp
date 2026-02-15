@@ -1,23 +1,52 @@
 """
 Visualization plots for GP ranking experiments.
 
-Updated for new result types (ModelResult, ExperimentData).
+Loads all data directly from saved CSV files - no data regeneration needed.
 """
 import json
 from pathlib import Path
 from typing import Optional, Dict, Tuple
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
 from ..results.types import ModelResult
-from ..data.dataset import ExperimentData
+
+
+@dataclass
+class PlotData:
+    """Data loaded from CSV for plotting. No regeneration needed."""
+    # Test data
+    X_test: np.ndarray
+    y_true_test: np.ndarray
+    y_pred_test: np.ndarray
+    var_test: np.ndarray
+
+    # Train data
+    X_train: np.ndarray
+    y_noisy_train: np.ndarray
+    y_pred_train: np.ndarray
+    var_train: np.ndarray
+
+    # Validation data
+    X_val: np.ndarray
+    y_noisy_val: np.ndarray
+    y_pred_val: np.ndarray
+    var_val: np.ndarray
+
+    @property
+    def dimension(self) -> int:
+        """Infer dimension from X shape."""
+        if self.X_test.ndim == 1:
+            return 1
+        return self.X_test.shape[1]
 
 
 def plot_fitness_function_grid(
     fitness_fn: str,
-    data: ExperimentData,
+    plot_data: PlotData,
     exact_result: Optional[ModelResult],
     pairwise_result: Optional[ModelResult],
     output_dir: Path,
@@ -33,7 +62,7 @@ def plot_fitness_function_grid(
 
     Args:
         fitness_fn: Name of the fitness function.
-        data: ExperimentData with X/Y arrays.
+        plot_data: PlotData loaded directly from CSV (no regeneration).
         exact_result: ModelResult for best ExactGP (or None).
         pairwise_result: ModelResult for best PairwiseGP (or None).
         output_dir: Directory to save the plot.
@@ -54,14 +83,14 @@ def plot_fitness_function_grid(
         kernels.append(f"PairwiseGP: {pairwise_result.kernel_name}")
     fig.suptitle(f'{fitness_fn}\n{" | ".join(kernels)}', fontsize=14, fontweight='bold')
 
-    # Prepare test data for plots
-    X_test = data.X_test.numpy()
-    Y_test = data.Y_test_true.numpy()
-    X_train = data.X_train.numpy()
-    Y_train = data.Y_train_noisy.numpy()
+    # Use data directly from CSV - already de-standardized
+    X_test = plot_data.X_test
+    Y_test = plot_data.y_true_test
+    X_train = plot_data.X_train
+    Y_train = plot_data.y_noisy_train
 
     # For 1D, sort for proper line plots
-    if data.dimension == 1:
+    if plot_data.dimension == 1:
         X_test_flat = X_test.flatten()
         sort_idx = np.argsort(X_test_flat)
         X_test_sorted = X_test_flat[sort_idx]
@@ -82,7 +111,7 @@ def plot_fitness_function_grid(
     _plot_loss(axes[1, 1], pairwise_result, 'val', 'PairwiseGP', 'g')
 
     # ===== ROW 2: Function Fit =====
-    if data.dimension == 1:
+    if plot_data.dimension == 1:
         _plot_function_fit_1d(
             axes[2, 0], exact_result, X_test_sorted, Y_test_sorted,
             X_train_flat, Y_train_flat, sort_idx, 'ExactGP', 'b',
@@ -94,8 +123,8 @@ def plot_fitness_function_grid(
             show_ground_truth=False
         )
     else:
-        _plot_nd_placeholder(axes[2, 0], 'ExactGP', data.dimension, exact_result is not None)
-        _plot_nd_placeholder(axes[2, 1], 'PairwiseGP', data.dimension, pairwise_result is not None)
+        _plot_nd_placeholder(axes[2, 0], 'ExactGP', plot_data.dimension, exact_result is not None)
+        _plot_nd_placeholder(axes[2, 1], 'PairwiseGP', plot_data.dimension, pairwise_result is not None)
 
     # ===== ROW 3: Monotonicity (True vs Predicted) =====
     _plot_monotonicity(axes[3, 0], exact_result, Y_test, 'ExactGP', 'b')
@@ -116,16 +145,14 @@ def plot_fitness_function_grid(
 def plot_from_saved_results(
     experiment_dir: Path,
     fitness_fn: str,
-    data: ExperimentData,
 ) -> Optional[Path]:
     """
     Generate plot from saved experiment results.
 
-    Loads ModelResult data from the models/ subdirectory.
+    Loads all data directly from CSV files - no data regeneration needed.
 
     Args:
         experiment_dir: Experiment output directory.
-        data: ExperimentData with X/Y arrays.
         fitness_fn: Fitness function name.
 
     Returns:
@@ -134,16 +161,24 @@ def plot_from_saved_results(
     models_dir = experiment_dir / "models"
     plots_dir = experiment_dir / "plots"
 
-    # Load ExactGP result if available
+    # Load model results
     exact_result = _load_model_result(models_dir, "ExactGP", fitness_fn)
     pairwise_result = _load_model_result(models_dir, "PairwiseGP", fitness_fn)
 
     if exact_result is None and pairwise_result is None:
         return None
 
+    # Load plot data from CSV (prefer ExactGP, fallback to PairwiseGP)
+    plot_data = _load_plot_data(models_dir, "ExactGP", fitness_fn)
+    if plot_data is None:
+        plot_data = _load_plot_data(models_dir, "PairwiseGP", fitness_fn)
+
+    if plot_data is None:
+        return None
+
     return plot_fitness_function_grid(
         fitness_fn=fitness_fn,
-        data=data,
+        plot_data=plot_data,
         exact_result=exact_result,
         pairwise_result=pairwise_result,
         output_dir=plots_dir,
@@ -211,6 +246,48 @@ def _load_model_result(models_dir: Path, gp_type: str, fitness_fn: str) -> Optio
         )
     except Exception as e:
         print(f"Warning: Could not load {gp_type}_{fitness_fn}: {e}")
+        return None
+
+
+def _load_plot_data(models_dir: Path, gp_type: str, fitness_fn: str) -> Optional[PlotData]:
+    """
+    Load X/Y data directly from predictions CSV.
+
+    No data regeneration needed - uses saved data for reliable plotting.
+    """
+    model_dir = models_dir / f"{gp_type}_{fitness_fn}"
+    pred_file = model_dir / "predictions.csv"
+
+    if not pred_file.exists():
+        return None
+
+    try:
+        pred_df = pd.read_csv(pred_file)
+
+        # Extract data by fold: 0=train, 1=val, 2=test
+        train_df = pred_df[pred_df['fold'] == 0]
+        val_df = pred_df[pred_df['fold'] == 1]
+        test_df = pred_df[pred_df['fold'] == 2]
+
+        return PlotData(
+            # Test data
+            X_test=test_df['X'].values,
+            y_true_test=test_df['y_true'].values,
+            y_pred_test=test_df['y_pred'].values,
+            var_test=test_df['variance'].values,
+            # Train data
+            X_train=train_df['X'].values,
+            y_noisy_train=train_df['y_noisy'].values,
+            y_pred_train=train_df['y_pred'].values,
+            var_train=train_df['variance'].values,
+            # Validation data
+            X_val=val_df['X'].values,
+            y_noisy_val=val_df['y_noisy'].values,
+            y_pred_val=val_df['y_pred'].values,
+            var_val=val_df['variance'].values,
+        )
+    except Exception as e:
+        print(f"Warning: Could not load plot data for {gp_type}_{fitness_fn}: {e}")
         return None
 
 
