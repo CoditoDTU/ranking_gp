@@ -98,13 +98,11 @@ class ResultsCollector:
                 'fitness_fn': result.fitness_fn,
                 'kernel_name': result.kernel_name,
                 'seed': result.seed,
-                'snr_data': result.snr_data,
-                'snr_model': result.snr_model,
                 'optimizer': result.optimizer,
                 'lr': result.lr,
                 'training_iters': result.training_iters,
                 'signal_variance': result.signal_variance,
-                'noise_variance_data': result.noise_variance_data,
+                'noise_variance': result.noise_variance,
                 'noise_variance_model': float(result.noise_variance_model) if not np.isnan(result.noise_variance_model) else None,
                 'lengthscale': float(result.lengthscale) if not np.isnan(result.lengthscale) else None,
                 'train_mll': result.train_mll,
@@ -161,8 +159,6 @@ class ResultsCollector:
                     'optimizer': result.optimizer,
                     'lengthscale': float(result.lengthscale) if not np.isnan(result.lengthscale) else None,
                     'noise_variance_model': float(result.noise_variance_model) if not np.isnan(result.noise_variance_model) else None,
-                    'snr_data': result.snr_data,
-                    'snr_model': result.snr_model,
                     'seed': result.seed,
                 }, f, indent=2)
 
@@ -175,7 +171,8 @@ class ResultsCollector:
                     'kendall_tau': result.kendall_tau,
                     'spearman': result.spearman,
                     'signal_variance': result.signal_variance,
-                    'noise_variance_data': result.noise_variance_data,
+                    'noise_variance': result.noise_variance
+                    #'noise_variance_data': result.noise_variance_data,
                 }, f, indent=2)
 
             # predictions.csv - one row per sample with fold info

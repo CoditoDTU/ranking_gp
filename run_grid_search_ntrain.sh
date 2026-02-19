@@ -1,19 +1,19 @@
 #!/bin/bash
-# run_grid_search.sh
+# run_grid_search_ntrain.sh
 #
-# Grid search over seeds, noise_variance, and optimizers.
+# Grid search over n_train (training set size) with fixed learning rates.
 # Each combination runs a full experiment (all fitness functions × all kernels).
 #
 # Usage:
-#   ./run_grid_search.sh                              # Start new grid search
-#   ./run_grid_search.sh --grid_config my_grid.yaml   # Use custom grid config
-#   ./run_grid_search.sh --resume experiments/grid_X  # Resume crashed grid search
-#   ./run_grid_search.sh --quiet                      # Less verbose output
+#   ./run_grid_search_ntrain.sh                              # Start new grid search
+#   ./run_grid_search_ntrain.sh --grid_config my_grid.yaml   # Use custom grid config
+#   ./run_grid_search_ntrain.sh --resume experiments/grid_X  # Resume crashed grid search
+#   ./run_grid_search_ntrain.sh --quiet                      # Less verbose output
 
 set -o pipefail
 
 # Default values
-GRID_CONFIG="configs/grid_search.yaml"
+GRID_CONFIG="/Users/codito/Code/Msc/ranking_gp/configs/grid_search_ntrain.yaml"
 QUIET=""
 RESUME_DIR=""
 
@@ -34,7 +34,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: ./run_grid_search.sh [--grid_config FILE] [--quiet] [--resume DIR]"
+            echo "Usage: ./run_grid_search_ntrain.sh [--grid_config FILE] [--quiet] [--resume DIR]"
             exit 1
             ;;
     esac
@@ -57,15 +57,18 @@ with open("$GRID_CONFIG") as f:
 
 # Output as shell-compatible format
 seeds = config.get('seeds', [42])
-noise_variance = config.get('noise_variance', [10])
-optimizers = config.get('optimizers', ['Adam'])
-base_config = config.get('base_config', 'config_new.yaml')
+n_trains = config.get('n_trains', [50])
+exact_lr = config.get('exact_lr', 0.5)
+pairwise_lr = config.get('pairwise_lr', 0.01)
+snr = config.get('snr', 10.0)
+base_config = config.get('base_config', 'configs/config_new.yaml')
 
 # Convert to space-separated strings for bash arrays
 print(f"SEEDS=({' '.join(str(s) for s in seeds)})")
-print(f"NOISE_VARIANCE=({' '.join(str(n) for n in noise_variance)})")
-opt_str = ' '.join(f'"{o}"' for o in optimizers)
-print(f"OPTIMIZERS=({opt_str})")
+print(f"N_TRAINS=({' '.join(str(n) for n in n_trains)})")
+print(f"EXACT_LR={exact_lr}")
+print(f"PAIRWISE_LR={pairwise_lr}")
+print(f"SNR={snr}")
 print(f'CONFIG="{base_config}"')
 EOF
 }
@@ -82,15 +85,15 @@ if [[ -n "$RESUME_DIR" ]]; then
     fi
     GRID_DIR="$RESUME_DIR"
     echo "=========================================="
-    echo "Resuming Grid Search"
+    echo "Resuming Grid Search (n_train)"
     echo "=========================================="
     echo "Resuming from: $GRID_DIR"
 else
     # New grid search
-    GRID_DIR="experiments/grid_$(date +%Y%m%d_%H%M%S)"
+    GRID_DIR="experiments/grid_ntrain_$(date +%Y%m%d_%H%M%S)"
     mkdir -p "$GRID_DIR"
     echo "=========================================="
-    echo "Grid Search Starting"
+    echo "Grid Search Starting (n_train)"
     echo "=========================================="
     echo "Output directory: $GRID_DIR"
 fi
@@ -102,8 +105,10 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 echo "Log file: $LOG_FILE"
 echo "Grid config: $GRID_CONFIG"
 echo "Seeds: ${SEEDS[*]}"
-echo "Noise variance: ${NOISE_VARIANCE[*]}"
-echo "Optimizers: ${OPTIMIZERS[*]}"
+echo "N_trains: ${N_TRAINS[*]}"
+echo "ExactGP LR: $EXACT_LR (fixed)"
+echo "PairwiseGP LR: $PAIRWISE_LR (fixed)"
+echo "SNR: $SNR"
 echo "Base config: $CONFIG"
 echo "Started at: $(date)"
 echo "=========================================="
@@ -140,7 +145,7 @@ if [[ -z "$RESUME_DIR" ]]; then
 fi
 
 # Count total and completed experiments
-TOTAL=$((${#SEEDS[@]} * ${#NOISE_VARIANCE[@]} * ${#OPTIMIZERS[@]}))
+TOTAL=$((${#SEEDS[@]} * ${#N_TRAINS[@]}))
 COMPLETED_COUNT=$(wc -l < "$STATUS_FILE" | tr -d ' ')
 CURRENT=0
 SKIPPED=0
@@ -154,47 +159,48 @@ echo ""
 
 # Run experiments
 for seed in "${SEEDS[@]}"; do
-    for noise in "${NOISE_VARIANCE[@]}"; do
-        for opt in "${OPTIMIZERS[@]}"; do
-            CURRENT=$((CURRENT + 1))
-            exp_name="exp_${seed}_sigma_${noise}_${opt}"
+    for n_train in "${N_TRAINS[@]}"; do
+        CURRENT=$((CURRENT + 1))
+        exp_name="exp_s${seed}_n${n_train}"
 
-            # Check if already completed
-            if is_completed "$exp_name"; then
-                echo "[$CURRENT/$TOTAL] Skipping (already done): $exp_name"
-                SKIPPED=$((SKIPPED + 1))
-                continue
-            fi
+        # Check if already completed
+        if is_completed "$exp_name"; then
+            echo "[$CURRENT/$TOTAL] Skipping (already done): $exp_name"
+            SKIPPED=$((SKIPPED + 1))
+            continue
+        fi
 
-            echo ""
-            echo "[$CURRENT/$TOTAL] Running: $exp_name"
-            echo "  Seed: $seed, noise_variance: $noise, Optimizer: $opt"
-            echo "  Started at: $(date)"
+        echo ""
+        echo "[$CURRENT/$TOTAL] Running: $exp_name"
+        echo "  Seed: $seed, N_train: $n_train"
+        echo "  ExactGP LR: $EXACT_LR, PairwiseGP LR: $PAIRWISE_LR"
+        echo "  Started at: $(date)"
 
-            # Run experiment
-            python run_experiments.py \
-                --config "$CONFIG" \
-                --seed "$seed" \
-                --noise_variance "$noise" \
-                --optimizer "$opt" \
-                --output_dir "$GRID_DIR/runs/$exp_name" \
-                $QUIET
+        # Run experiment with fixed LRs
+        python run_experiments.py \
+            --config "$CONFIG" \
+            --seed "$seed" \
+            --snr "$SNR" \
+            --n_train "$n_train" \
+            --exact_lr "$EXACT_LR" \
+            --pairwise_lr "$PAIRWISE_LR" \
+            --output_dir "$GRID_DIR/runs/$exp_name" \
+            $QUIET
 
-            if [ $? -ne 0 ]; then
-                echo "  WARNING: Experiment $exp_name failed at $(date)"
-                FAILED=$((FAILED + 1))
-                # Don't mark as completed so it can be retried on resume
-            else
-                echo "  Completed: $exp_name at $(date)"
-                mark_completed "$exp_name"
-            fi
-        done
+        if [ $? -ne 0 ]; then
+            echo "  WARNING: Experiment $exp_name failed at $(date)"
+            FAILED=$((FAILED + 1))
+            # Don't mark as completed so it can be retried on resume
+        else
+            echo "  Completed: $exp_name at $(date)"
+            mark_completed "$exp_name"
+        fi
     done
 done
 
 echo ""
 echo "=========================================="
-echo "Grid Search Complete"
+echo "Grid Search Complete (n_train)"
 echo "=========================================="
 echo "Finished at: $(date)"
 echo "Summary:"
@@ -205,7 +211,7 @@ echo "  Newly completed: $((TOTAL - SKIPPED - FAILED))"
 echo ""
 echo "Running aggregation..."
 
-# Aggregate results
+# Aggregate results (using generic aggregation script)
 python aggregate_grid_search.py --grid_dir "$GRID_DIR"
 
 if [ $? -eq 0 ]; then
@@ -226,4 +232,4 @@ else
 fi
 
 echo ""
-echo "To resume if interrupted: ./run_grid_search.sh --resume $GRID_DIR"
+echo "To resume if interrupted: ./run_grid_search_ntrain.sh --resume $GRID_DIR"

@@ -25,14 +25,15 @@ class DataConfig:
     n_train: int
     n_test: int
     val_fraction: float
-    snr: float  # inf = no noise
+    noise_variance: float
 
 
 @dataclass
 class ModelConfig:
     """Configuration for model architecture."""
     kernels: List[str]
-    snr_model: float
+    noise_variance_model: float
+    noise_variance_model_factors: List[float]
     # Note: Lengthscale is learnable by default
 
 
@@ -67,6 +68,7 @@ class ExperimentSettings:
     seed: int
     selection_criterion: SelectionCriterion
     output_dir: str
+    noise_variance: float
 
 
 @dataclass
@@ -76,11 +78,6 @@ class Config:
     model: ModelConfig
     trainer: TrainerConfig
     experiment: ExperimentSettings
-
-    @property
-    def has_noise(self) -> bool:
-        """Check if noise is enabled (SNR is finite)."""
-        return self.data.snr != float('inf')
 
 
 def load_config(config_path: str) -> Config:
@@ -104,18 +101,12 @@ def load_config(config_path: str) -> Config:
     with open(config_path, 'r') as f:
         raw = yaml.safe_load(f)
 
-    # Parse SNR (handle 'inf' string)
-    snr_str = raw['data'].get('snr', 10.0)
-    if isinstance(snr_str, str) and snr_str.lower() == 'inf':
-        snr = float('inf')
-    else:
-        snr = float(snr_str)
+    # Parse noise_variance (handle 'inf' string)
+    noise_variance = float(raw['data'].get('noise_variance', 0))
+   
+    
 
-    snr_model_str = raw['model'].get('snr_model', 10.0)
-    if isinstance(snr_model_str, str) and snr_model_str.lower() == 'inf':
-        snr_model = float('inf')
-    else:
-        snr_model = float(snr_model_str)
+    noise_variance_model = float(raw['model'].get('noise_variance_model', 10.0) )  
 
     # Parse LRs (support both 'lr' for single value and 'lrs' for list)
     def parse_lrs(trainer_raw: dict) -> List[float]:
@@ -144,11 +135,12 @@ def load_config(config_path: str) -> Config:
             n_train=raw['data']['n_train'],
             n_test=raw['data']['n_test'],
             val_fraction=raw['data']['val_fraction'],
-            snr=snr,
+            noise_variance=noise_variance,
         ),
         model=ModelConfig(
             kernels=raw['model']['kernels'],
-            snr_model=snr_model,
+            noise_variance_model=noise_variance_model,
+            noise_variance_model_factors= raw['model']['noise_variance_model_factors']
         ),
         trainer=TrainerConfig(
             exact_gp=parse_trainer_settings(raw['trainer']['exact_gp']),
@@ -158,6 +150,7 @@ def load_config(config_path: str) -> Config:
             seed=raw['experiment']['seed'],
             selection_criterion=SelectionCriterion(raw['experiment']['selection_criterion']),
             output_dir=raw['experiment'].get('output_dir', 'experiments/'),
+            noise_variance=raw['data'].get('noise_variance')
         ),
     )
 
@@ -189,11 +182,12 @@ def load_config_with_overrides(config_path: str, overrides: Dict[str, Any] = Non
         config.experiment.selection_criterion = SelectionCriterion(overrides['selection_criterion'])
 
     # --- Data settings ---
-    if overrides.get('snr') is not None:
-        config.data.snr = float(overrides['snr'])
 
     if overrides.get('n_train') is not None:
         config.data.n_train = overrides['n_train']
+    
+    if overrides.get('noise_variance') is not None:
+        config.data.noise_variance = overrides['noise_variance']
 
     if overrides.get('n_test') is not None:
         config.data.n_test = overrides['n_test']
@@ -209,12 +203,15 @@ def load_config_with_overrides(config_path: str, overrides: Dict[str, Any] = Non
         config.data.fitness_functions = [overrides['fitness_function']]
 
     # --- Model settings ---
-    if overrides.get('snr_model') is not None:
-        config.model.snr_model = float(overrides['snr_model'])
+
 
     if overrides.get('kernel') is not None:
         # Single kernel overrides the list
         config.model.kernels = [overrides['kernel']]
+
+    if overrides.get('noise_variance_model_factors') is not None:
+        # Single kernel overrides the list
+        config.model.kernels = [overrides['noise_variance_model_factors']]
 
     # --- Trainer settings (shared) ---
     if overrides.get('optimizer') is not None:
@@ -263,15 +260,7 @@ def config_to_dict(config: Config) -> Dict[str, Any]:
     Returns:
         Dictionary representation of the config.
     """
-    # Handle inf SNR values
-    snr_value = config.data.snr
-    if snr_value == float('inf'):
-        snr_value = 'inf'
-
-    snr_model_value = config.model.snr_model
-    if snr_model_value == float('inf'):
-        snr_model_value = 'inf'
-
+   
     return {
         'data': {
             'fitness_functions': config.data.fitness_functions,
@@ -279,11 +268,11 @@ def config_to_dict(config: Config) -> Dict[str, Any]:
             'n_train': config.data.n_train,
             'n_test': config.data.n_test,
             'val_fraction': config.data.val_fraction,
-            'snr': snr_value,
+            'noise_variance': config.data.noise_variance,
         },
         'model': {
             'kernels': config.model.kernels,
-            'snr_model': snr_model_value,
+            'noise_variance_model': config.model.noise_variance_model,
         },
         'trainer': {
             'exact_gp': {

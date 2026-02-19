@@ -24,16 +24,15 @@ class ModelResult:
 
     # Config
     seed: int
-    snr_data: float
-    snr_model: float
+    noise_variance: float
+    noise_variance_model: float
     optimizer: str
     lr: float
     training_iters: int
 
     # Data info
     signal_variance: float
-    noise_variance_data: float      # Actual noise added to data
-    noise_variance_model: float     # Model's learned noise (ExactGP only, NaN for PairwiseGP)
+    #noise_variance_data: float      # Actual noise added to data
     lengthscale: float
 
     # Metrics
@@ -94,13 +93,10 @@ class ModelResult:
             'fitness_fn': self.fitness_fn,
             'kernel_name': self.kernel_name,
             'seed': self.seed,
-            'snr_data': self.snr_data,
-            'snr_model': self.snr_model,
             'optimizer': self.optimizer,
             'lr': self.lr,
             'training_iters': self.training_iters,
-            'signal_variance': self.signal_variance,
-            'noise_variance_data': self.noise_variance_data,
+            'noise_variance': self.noise_variance,
             'noise_variance_model': self.noise_variance_model,
             'lengthscale': self.lengthscale,
             'train_mll': self.train_mll,
@@ -122,8 +118,6 @@ class FailureRecord:
     fitness_fn: str
     kernel_name: str
     seed: int
-    snr_data: float
-    snr_model: float
     error_type: str
     error_message: str
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -135,8 +129,6 @@ class FailureRecord:
             'fitness_fn': self.fitness_fn,
             'kernel_name': self.kernel_name,
             'seed': self.seed,
-            'snr_data': self.snr_data,
-            'snr_model': self.snr_model,
             'error_type': self.error_type,
             'error_message': self.error_message,
             'timestamp': self.timestamp,

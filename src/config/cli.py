@@ -21,8 +21,8 @@ def create_experiment_parser() -> argparse.ArgumentParser:
                         help="Output directory (overrides config)")
 
     # Data settings
-    parser.add_argument("--snr", type=float, default=None,
-                        help="Data SNR (overrides config). Use 'inf' for no noise.")
+    parser.add_argument("--noise_variance", type=float, default=None,
+                        help="noise_variance [0-1]. Decides the amount of noise in the data")
     parser.add_argument("--n_train", type=int, default=None,
                         help="Number of training samples (overrides config)")
     parser.add_argument("--n_test", type=int, default=None,
@@ -35,8 +35,8 @@ def create_experiment_parser() -> argparse.ArgumentParser:
                         help="Input dimension (overrides config)")
 
     # Model settings
-    parser.add_argument("--snr_model", type=float, default=None,
-                        help="Model SNR for priors (overrides config)")
+    parser.add_argument("--noise-model", type=float, default=None,
+                        help="Model noise believe for ExactGP")
     parser.add_argument("--kernel", type=str, default=None,
                         help="Single kernel name (overrides config list)")
 

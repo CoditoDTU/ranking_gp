@@ -18,9 +18,9 @@ class BaseModelWrapper(ABC):
         self,
         kernel_name: str,
         dimension: int,
-        snr_model: float,
         signal_variance: float,
         device: torch.device,
+        noise_variance_model: float = None
     ):
         """
         Initialize the model wrapper.
@@ -34,15 +34,11 @@ class BaseModelWrapper(ABC):
         """
         self.kernel_name = kernel_name
         self.dimension = dimension
-        self.snr_model = snr_model
         self.signal_variance = signal_variance
+        self.noise_variance_model = noise_variance_model
         self.device = device
 
-        # Computed expected noise variance
-        if snr_model == float('inf'):
-            self.expected_noise_variance = 1e-6
-        else:
-            self.expected_noise_variance = signal_variance / snr_model
+
 
         self.model = None
         self.likelihood = None

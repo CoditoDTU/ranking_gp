@@ -20,9 +20,8 @@ data:
   n_test: 100
   val_fraction: 0.2
 
-  # SNR-based noise (replaces g_std)
-  # inf = no noise, 10 = moderate, 1 = high noise
-  snr: 100.0
+  #
+  noise_variance: 0.5
 
 # ============================================================
 # MODEL CONFIGURATION
@@ -35,8 +34,9 @@ model:
     - matern_3_2
     - exponential
 
-  # Expected SNR for model priors (independent from data.snr)
-  snr_model: 50.0
+  # Expected variance for model priors (independent from data.noise_variance)
+  noise_variance_model: 0.1
+  noise_variance_model_factors: [0.5, 1.0, 2.0]
 
   # Note: Lengthscale is learnable by default
 
@@ -48,7 +48,8 @@ trainer:
   exact_gp:
     training_iters: 400
     # Use 'lrs' for LR grid search, or 'lr' for single value
-    lrs: [0.01, 0.1, 0.5]
+    #lrs: [0.01, 0.1, 0.5]
+    lr: 0.5
     optimizer: Adam
     # Early stopping: stop when relative improvement < threshold for patience iters
     early_stopping: true
@@ -57,9 +58,10 @@ trainer:
     check_interval: 10
 
   pairwise_gp:
-    training_iters: 2000
+    training_iters: 500
     # Use 'lrs' for LR grid search, or 'lr' for single value
-    lrs: [0.0001, 0.001, 0.01]
+    #lrs: [0.0001, 0.001, 0.01]
+    lr: 0.01
     optimizer: Adam
     # Early stopping: stop when relative improvement < threshold for patience iters
     early_stopping: true

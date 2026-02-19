@@ -50,6 +50,7 @@ def plot_fitness_function_grid(
     exact_result: Optional[ModelResult],
     pairwise_result: Optional[ModelResult],
     output_dir: Path,
+    exactgp_type: str = "ExactGP",
 ) -> Optional[Path]:
     """
     Generate a 4x2 grid plot for a fitness function showing best models.
@@ -66,6 +67,7 @@ def plot_fitness_function_grid(
         exact_result: ModelResult for best ExactGP (or None).
         pairwise_result: ModelResult for best PairwiseGP (or None).
         output_dir: Directory to save the plot.
+        exactgp_type: ExactGP type for filename (e.g., "ExactGP_0.5x").
 
     Returns:
         Path to saved PDF, or None if no results.
@@ -75,10 +77,10 @@ def plot_fitness_function_grid(
 
     fig, axes = plt.subplots(4, 2, figsize=(14, 16))
 
-    # Build title
+    # Build title - use actual gp_type from result
     kernels = []
     if exact_result:
-        kernels.append(f"ExactGP: {exact_result.kernel_name}")
+        kernels.append(f"{exact_result.gp_type}: {exact_result.kernel_name}")
     if pairwise_result:
         kernels.append(f"PairwiseGP: {pairwise_result.kernel_name}")
     fig.suptitle(f'{fitness_fn}\n{" | ".join(kernels)}', fontsize=14, fontweight='bold')
@@ -135,7 +137,7 @@ def plot_fitness_function_grid(
     # Save
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    pdf_path = output_dir / f"{fitness_fn}_4x2.pdf"
+    pdf_path = output_dir / f"{exactgp_type}_{fitness_fn}_4x2.pdf"
     fig.savefig(pdf_path, format='pdf', bbox_inches='tight')
     plt.close(fig)
 
@@ -145,6 +147,7 @@ def plot_fitness_function_grid(
 def plot_from_saved_results(
     experiment_dir: Path,
     fitness_fn: str,
+    exactgp_type: str = "ExactGP",
 ) -> Optional[Path]:
     """
     Generate plot from saved experiment results.
@@ -154,6 +157,7 @@ def plot_from_saved_results(
     Args:
         experiment_dir: Experiment output directory.
         fitness_fn: Fitness function name.
+        exactgp_type: ExactGP type (e.g., "ExactGP_0.5x").
 
     Returns:
         Path to saved PDF, or None if no results.
@@ -162,14 +166,14 @@ def plot_from_saved_results(
     plots_dir = experiment_dir / "plots"
 
     # Load model results
-    exact_result = _load_model_result(models_dir, "ExactGP", fitness_fn)
+    exact_result = _load_model_result(models_dir, exactgp_type, fitness_fn)
     pairwise_result = _load_model_result(models_dir, "PairwiseGP", fitness_fn)
 
     if exact_result is None and pairwise_result is None:
         return None
 
     # Load plot data from CSV (prefer ExactGP, fallback to PairwiseGP)
-    plot_data = _load_plot_data(models_dir, "ExactGP", fitness_fn)
+    plot_data = _load_plot_data(models_dir, exactgp_type, fitness_fn)
     if plot_data is None:
         plot_data = _load_plot_data(models_dir, "PairwiseGP", fitness_fn)
 
@@ -182,6 +186,7 @@ def plot_from_saved_results(
         exact_result=exact_result,
         pairwise_result=pairwise_result,
         output_dir=plots_dir,
+        exactgp_type=exactgp_type,
     )
 
 
@@ -221,14 +226,12 @@ def _load_model_result(models_dir: Path, gp_type: str, fitness_fn: str) -> Optio
             fitness_fn=fitness_fn,
             kernel_name=hyperparams.get('kernel', 'unknown'),
             seed=hyperparams.get('seed', 0),
-            snr_data=hyperparams.get('snr_data', 0),
-            snr_model=hyperparams.get('snr_model', 0),
+            noise_variance=hyperparams.get('noise_variance', 0),
+            noise_variance_model=hyperparams.get('noise_variance_model', 0),
             optimizer=hyperparams.get('optimizer', 'Adam'),
             lr=hyperparams.get('lr', 0),
             training_iters=hyperparams.get('training_iters', 0),
             signal_variance=metrics.get('signal_variance', 0),
-            noise_variance_data=metrics.get('noise_variance_data', 0),
-            noise_variance_model=hyperparams.get('noise_variance_model') or np.nan,
             lengthscale=hyperparams.get('lengthscale') or np.nan,
             train_mll=metrics.get('train_mll', 0),
             val_mll=metrics.get('val_mll', 0),

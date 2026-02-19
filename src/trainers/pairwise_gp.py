@@ -17,7 +17,7 @@ from ..models.kernels import build_kernel
 from ..data.dataset import ExperimentData
 from ..data.comparisons import get_comparisons
 from ..solvers import get_optimizer
-
+from tqdm import tqdm
 
 class PairwiseGPTrainer(BaseTrainer):
     """

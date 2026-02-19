@@ -54,9 +54,6 @@ class PairwiseGPModel(BaseModelWrapper):
 
         # Outputscale prior centered on signal variance
         # Gamma(alpha, beta) has mean = alpha / beta
-        alpha = 2.0
-        beta = alpha / self.signal_variance
-        #outputscale_prior = GammaPrior(concentration=alpha, rate=beta)
 
         kernel = build_kernel(
             self.kernel_name,

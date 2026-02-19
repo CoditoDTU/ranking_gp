@@ -54,8 +54,8 @@ class ExperimentData:
     n_train: int
     n_test: int
     val_fraction: float
-    snr: float
     seed: int
+    noise_variance: float 
 
     # Computed after sample()
     fitness_fn: Any = field(init=False, default=None)
@@ -80,7 +80,7 @@ class ExperimentData:
     Y_val_noisy: torch.Tensor = field(init=False, default=None)
     Y_test_noisy: torch.Tensor = field(init=False, default=None)
     signal_variance: float = field(init=False, default=None)
-    noise_variance: float = field(init=False, default=None)
+    
 
     # Computed after compute_comparisons()
     comparisons_train: torch.Tensor = field(init=False, default=None)
@@ -179,24 +179,19 @@ class ExperimentData:
         # After standardization, this will be ~1.0
         self.signal_variance = self.Y_train_true.var().item()
 
-        if self.snr == float('inf'):
-            # No noise case
-            self.noise_variance = 0.0
-            self.Y_train_noisy = self.Y_train_true.clone()
-            self.Y_val_noisy = self.Y_val_true.clone()
-            self.Y_test_noisy = self.Y_test_true.clone()
-        else:
+       
             # Compute noise variance: sigma^2_noise = sigma^2_signal / SNR
-            self.noise_variance = self.signal_variance / self.snr
-            noise_std = np.sqrt(self.noise_variance)
+            
+        noise_std = np.sqrt(self.noise_variance)
 
-            # Set seed for reproducible noise
-            torch.manual_seed(self.seed)
+        # Set seed for reproducible noise
+        torch.manual_seed(self.seed)
 
-            # Apply noise to all splits
-            self.Y_train_noisy = self.Y_train_true + torch.randn_like(self.Y_train_true) * noise_std
-            self.Y_val_noisy = self.Y_val_true + torch.randn_like(self.Y_val_true) * noise_std
-            self.Y_test_noisy = self.Y_test_true + torch.randn_like(self.Y_test_true) * noise_std
+        # Apply noise to all splits
+        self.Y_train_noisy = self.Y_train_true + torch.randn_like(self.Y_train_true) * noise_std
+
+        self.Y_val_noisy = self.Y_val_true + torch.randn_like(self.Y_val_true) * noise_std
+        self.Y_test_noisy = self.Y_test_true + torch.randn_like(self.Y_test_true) * noise_std
 
         return self
 

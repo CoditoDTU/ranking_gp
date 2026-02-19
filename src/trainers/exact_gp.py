@@ -13,7 +13,7 @@ from .base import BaseTrainer
 from ..models.exact_gp import ExactGPModel
 from ..data.dataset import ExperimentData
 from ..solvers import get_optimizer
-
+from tqdm import tqdm
 
 class ExactGPTrainer(BaseTrainer):
     """

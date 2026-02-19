@@ -2,11 +2,11 @@
 # Edit this file to customize the grid search parameters
 
 # Seeds for reproducibility (list of integers)
-seeds: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+seeds: [0]
 
-# Signal-to-noise ratios (log scale from 0.1 to 100)
-# Use 'inf' for no noise
-snrs: [0.1, 0.21544347, 0.46415888, 1, 2.15443469,  4.64158883, 10 , 21.5443469 , 46.41588834, 100]
+# Noise variance values for grid search
+# Higher values = more noise
+noise_variance: [0.1, 0.2] #[0, 0.25, 0.5, 0.75, 1]
 
 # Optimizers to test
 optimizers: ["Adam"]

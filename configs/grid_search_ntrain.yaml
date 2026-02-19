@@ -1,0 +1,18 @@
+# Grid Search Configuration - N_train sweep
+# Fixed learning rates, varying training set size
+
+# Seeds for reproducibility
+seeds: [42]
+
+# Training set sizes (30 to 120 in increments of 10)
+n_trains: [256, 512]
+
+# Fixed learning rates (from previous grid search results)
+exact_lr: 0.5
+pairwise_lr: 0.01
+
+# SNR to use (moderate noise)
+snr: 10.0
+
+# Base experiment config file (relative to project root)
+base_config: "configs/config_new.yaml"

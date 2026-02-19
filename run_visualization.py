@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from src.visualization import plot_from_saved_results
-
+import re
 
 def find_latest_experiment(experiments_dir: Path) -> Path:
     """Find the most recent experiment directory."""
@@ -34,6 +34,24 @@ def find_latest_experiment(experiments_dir: Path) -> Path:
     return exp_dirs[0]
 
 
+def get_exactgp_variants_from_experiment(exp_dir: Path) -> list:
+    """Get list of (exactgp_type, fitness_fn) tuples from experiment."""
+    models_dir = exp_dir / "models"
+    if not models_dir.exists():
+        return []
+    
+    variants = []
+    for model_dir in models_dir.iterdir():
+        if model_dir.is_dir() and model_dir.name.startswith("ExactGP_"):
+            # e.g., "ExactGP_0.5x_ackley" -> ("ExactGP_0.5x", "ackley")
+            match = re.match(r'(ExactGP_[\d.]+x)_(.+)', model_dir.name)
+            if match:
+                variants.append((match.group(1), match.group(2)))
+    
+    return sorted(variants)
+
+
+
 def get_fitness_functions_from_experiment(exp_dir: Path) -> list:
     """Get list of fitness functions from experiment's models directory."""
     models_dir = exp_dir / "models"
@@ -41,12 +59,24 @@ def get_fitness_functions_from_experiment(exp_dir: Path) -> list:
         return []
 
     fitness_fns = set()
+    # for model_dir in models_dir.iterdir():
+    #     if model_dir.is_dir():
+    #         # Parse "ExactGP_ackley" or "PairwiseGP_levy"
+    #         parts = model_dir.name.split("_", 1)
+    #         if len(parts) == 2:
+    #             fitness_fns.add(parts[1])
+
     for model_dir in models_dir.iterdir():
         if model_dir.is_dir():
-            # Parse "ExactGP_ackley" or "PairwiseGP_levy"
-            parts = model_dir.name.split("_", 1)
-            if len(parts) == 2:
-                fitness_fns.add(parts[1])
+            name = model_dir.name
+            match = re.match(f'ExactGP_[\d.]+x_(.+)', name)
+            if match:
+                fitness_fns.add(match.group(1))
+            else:
+                parts = name.split("_",1)
+                if len(parts) == 2:
+                    fitness_fns.add(parts[1])
+
 
     return sorted(fitness_fns)
 
@@ -76,24 +106,39 @@ def visualize_experiment(exp_dir: Path) -> bool:
     plots_dir.mkdir(exist_ok=True)
 
     generated = 0
-    for fn_name in fitness_functions:
-        print(f"  Plotting {fn_name}...", end=" ")
 
-        try:
-            # Generate plot - all data loaded from CSV, no regeneration needed
-            pdf_path = plot_from_saved_results(
-                experiment_dir=exp_dir,
-                fitness_fn=fn_name,
-            )
-
-            if pdf_path:
+    for exactgp_type, fn_name in get_exactgp_variants_from_experiment(exp_dir):
+    # Generate plot for this ExactGP variant vs PairwiseGP
+        pdf_path = plot_from_saved_results(
+            experiment_dir=exp_dir,
+            fitness_fn=fn_name,
+            exactgp_type=exactgp_type,  # NEW parameter
+        )
+        if pdf_path:
                 print(f"saved to {pdf_path.name}")
                 generated += 1
-            else:
-                print("no data")
+        else:
+            print("no data")
 
-        except Exception as e:
-            print(f"error: {e}")
+
+    # for fn_name in fitness_functions:
+    #     print(f"  Plotting {fn_name}...", end=" ")
+
+    #     try:
+    #         # Generate plot - all data loaded from CSV, no regeneration needed
+    #         pdf_path = plot_from_saved_results(
+    #             experiment_dir=exp_dir,
+    #             fitness_fn=fn_name,
+    #         )
+
+    #         if pdf_path:
+    #             print(f"saved to {pdf_path.name}")
+    #             generated += 1
+    #         else:
+    #             print("no data")
+
+    #     except Exception as e:
+    #         print(f"error: {e}")
 
     print(f"  Done! Generated {generated} plots in: {plots_dir}")
     return generated > 0

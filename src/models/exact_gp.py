@@ -65,8 +65,8 @@ class ExactGPModel(BaseModelWrapper):
 
         # Estimate initial noise from data variance as a heuristic
         # This helps when snr_model doesn't match snr_data
-        data_variance = y.var().item()
-        initial_noise = max(data_variance * 0.5, self.expected_noise_variance)
+    
+        initial_noise = self.noise_variance_model
 
         # No prior on noise - let the data speak
         # The MLL objective naturally regularizes noise estimation

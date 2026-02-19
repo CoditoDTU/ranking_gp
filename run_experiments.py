@@ -11,8 +11,8 @@ Uses the refactored module structure:
 
 Usage:
     python run_experiments.py --config config_new.yaml
-    python run_experiments.py --config config_new.yaml --seed 42 --snr 10.0
-    python run_experiments.py --seed 42 --snr 20 --optimizer Adam --quiet
+    python run_experiments.py --config config_new.yaml --seed 42 --noise_variance 0.5
+    python run_experiments.py --seed 42 --noise_variance 0.1 --optimizer Adam --quiet
 """
 import os
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
@@ -29,116 +29,12 @@ from src.data import ExperimentData
 from src.models import ExactGPModel, PairwiseGPModel
 from src.trainers import ExactGPTrainer, PairwiseGPTrainer
 from src.results import ResultsCollector, ModelResult, FailureRecord
+from tqdm import tqdm
 
 
-def main():
-    warnings.filterwarnings("ignore", message="The input matches the stored training data")
-
-    # --- Parse arguments and load config ---
-    parser = create_experiment_parser()
-    args = parser.parse_args()
-
-    # Load config with CLI overrides
-    config = load_config_with_overrides(args.config, vars(args))
-
-    # --- Set seeds ---
-    np.random.seed(config.experiment.seed)
-    torch.manual_seed(config.experiment.seed)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if not args.quiet:
-        print(f"Using device: {device}")
-        print(f"Seed: {config.experiment.seed}")
-        print(f"Data SNR: {config.data.snr}")
-        print(f"Model SNR: {config.model.snr_model}")
-
-    # --- Setup output directory ---
-    # If output_dir was explicitly set via CLI, use it directly (for grid search)
-    # Otherwise, create a timestamped subfolder
-    if args.output_dir is not None:
-        output_dir = Path(args.output_dir)
-    else:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = Path(config.experiment.output_dir) / f"exp_{timestamp}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # --- Save config used (includes CLI overrides) ---
-    save_config(config, output_dir / "config.yaml")
-
-    # --- Setup results collector ---
-    collector = ResultsCollector(output_dir, criterion=config.experiment.selection_criterion)
-
-    # --- Count total experiments ---
-    total = (
-        len(config.data.fitness_functions) *
-        len(config.model.kernels) *
-        2  # ExactGP + PairwiseGP
-    )
-    current = 0
-
-    # --- Main experiment loop ---
-    for fn_name in config.data.fitness_functions:
-        if not args.quiet:
-            print(f"\n{'='*50}")
-            print(f"Fitness Function: {fn_name}")
-            print(f"{'='*50}")
-
-        # Prepare data using ExperimentData
-        data = ExperimentData(
-            fitness_fn_name=fn_name,
-            dimension=config.data.dimension,
-            n_train=config.data.n_train,
-            n_test=config.data.n_test,
-            val_fraction=config.data.val_fraction,
-            snr=config.data.snr,
-            seed=config.experiment.seed,
-        )
-        data.prepare()
-
-        for kernel_name in config.model.kernels:
-            # ========== ExactGP ==========
-            current += 1
-            if not args.quiet:
-                print(f"\n[{current}/{total}] ExactGP - {kernel_name}")
-
-            result = train_exactgp(
-                data=data,
-                kernel_name=kernel_name,
-                config=config,
-                device=device,
-                fn_name=fn_name,
-                collector=collector,
-            )
-            if result is not None:
-                collector.add_result(result)
-
-            # ========== PairwiseGP ==========
-            current += 1
-            if not args.quiet:
-                print(f"\n[{current}/{total}] PairwiseGP - {kernel_name}")
-
-            result = train_pairwisegp(
-                data=data,
-                kernel_name=kernel_name,
-                config=config,
-                device=device,
-                fn_name=fn_name,
-                collector=collector,
-            )
-            if result is not None:
-                collector.add_result(result)
-
-    # --- Save results ---
-    if not args.quiet:
-        print(f"\n{'='*50}")
-        print("Saving results...")
-
-    collector.save()
-
-    print(f"\nExperiment complete. Results saved to: {output_dir}")
 
 
-def train_exactgp(data, kernel_name, config, device, fn_name, collector):
+def train_exactgp(data, kernel_name, config, device, fn_name, collector, noise_variance_model, factor):
     """Train ExactGP model with LR grid search and return best ModelResult."""
     lrs = config.trainer.exact_gp.lrs
     best_result = None
@@ -151,7 +47,7 @@ def train_exactgp(data, kernel_name, config, device, fn_name, collector):
             model = ExactGPModel(
                 kernel_name=kernel_name,
                 dimension=config.data.dimension,
-                snr_model=config.model.snr_model,
+                noise_variance_model=noise_variance_model,
                 signal_variance=data.signal_variance,
                 device=device,
             )
@@ -206,18 +102,16 @@ def train_exactgp(data, kernel_name, config, device, fn_name, collector):
                 y_pred_test, var_test = data.destandardize_predictions(y_pred_test, var_test)
 
                 best_result = ModelResult(
-                    gp_type="ExactGP",
+                    gp_type=f"ExactGP_{factor}x",
                     fitness_fn=fn_name,
                     kernel_name=kernel_name,
                     seed=config.experiment.seed,
-                    snr_data=config.data.snr,
-                    snr_model=config.model.snr_model,
+                    noise_variance=config.data.noise_variance,
+                    noise_variance_model=noise_variance_model,
                     optimizer=config.trainer.exact_gp.optimizer,
                     lr=lr,
                     training_iters=config.trainer.exact_gp.training_iters,
                     signal_variance=data.signal_variance,
-                    noise_variance_data=data.noise_variance,
-                    noise_variance_model=trainer.get_noise_variance(),
                     lengthscale=trainer.get_lengthscale(),
                     train_mll=train_mll,
                     val_mll=val_mll,
@@ -259,8 +153,6 @@ def train_exactgp(data, kernel_name, config, device, fn_name, collector):
             fitness_fn=fn_name,
             kernel_name=kernel_name,
             seed=config.experiment.seed,
-            snr_data=config.data.snr,
-            snr_model=config.model.snr_model,
             error_type="AllLRsFailed",
             error_message=f"All LRs failed: {lrs}",
         )
@@ -284,7 +176,6 @@ def train_pairwisegp(data, kernel_name, config, device, fn_name, collector):
             model = PairwiseGPModel(
                 kernel_name=kernel_name,
                 dimension=config.data.dimension,
-                snr_model=config.model.snr_model,
                 signal_variance=data.signal_variance,
                 device=device,
             )
@@ -351,14 +242,12 @@ def train_pairwisegp(data, kernel_name, config, device, fn_name, collector):
                     fitness_fn=fn_name,
                     kernel_name=kernel_name,
                     seed=config.experiment.seed,
-                    snr_data=config.data.snr,
-                    snr_model=config.model.snr_model,
+                    noise_variance=config.data.noise_variance,
+                    noise_variance_model=config.model.noise_variance_model,
                     optimizer=config.trainer.pairwise_gp.optimizer,
                     lr=lr,
                     training_iters=config.trainer.pairwise_gp.training_iters,
                     signal_variance=data.signal_variance,
-                    noise_variance_data=data.noise_variance,
-                    noise_variance_model=np.nan,  # PairwiseGP has no explicit noise
                     lengthscale=trainer.get_lengthscale(),
                     train_mll=train_mll,
                     val_mll=val_mll,
@@ -400,8 +289,6 @@ def train_pairwisegp(data, kernel_name, config, device, fn_name, collector):
             fitness_fn=fn_name,
             kernel_name=kernel_name,
             seed=config.experiment.seed,
-            snr_data=config.data.snr,
-            snr_model=config.model.snr_model,
             error_type="AllLRsFailed",
             error_message=f"All LRs failed: {lrs}",
         )
@@ -410,6 +297,116 @@ def train_pairwisegp(data, kernel_name, config, device, fn_name, collector):
         print(f"    Best LR: {best_lr} (val_mll={best_val_score:.4f})")
 
     return best_result
+
+
+def main():
+    warnings.filterwarnings("ignore", message="The input matches the stored training data")
+
+    # --- Parse arguments and load config ---
+    parser = create_experiment_parser()
+    args = parser.parse_args()
+
+    # Load config with CLI overrides
+    config = load_config_with_overrides(args.config, vars(args))
+
+    # --- Set seeds ---
+    np.random.seed(config.experiment.seed)
+    torch.manual_seed(config.experiment.seed)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if not args.quiet:
+        print(f"Using device: {device}")
+        print(f"Seed: {config.experiment.seed}")
+        print(f"Noise variance: {config.data.noise_variance}")
+        print(f"model noise variance: {config.model.noise_variance_model}")
+
+    # --- Setup output directory ---
+    # If output_dir was explicitly set via CLI, use it directly (for grid search)
+    # Otherwise, create a timestamped subfolder
+    if args.output_dir is not None:
+        output_dir = Path(args.output_dir)
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = Path(config.experiment.output_dir) / f"exp_{timestamp}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- Save config used (includes CLI overrides) ---
+    save_config(config, output_dir / "config.yaml")
+
+    # --- Setup results collector ---
+    collector = ResultsCollector(output_dir, criterion=config.experiment.selection_criterion)
+
+    # --- Count total experiments ---
+    total = (
+        len(config.data.fitness_functions) *
+        len(config.model.kernels) *
+        2  # ExactGP + PairwiseGP
+    )
+    current = 0
+
+    # --- Main experiment loop ---
+    for fn_name in config.data.fitness_functions:
+        if not args.quiet:
+            print(f"\n{'='*50}")
+            print(f"Fitness Function: {fn_name}")
+            print(f"{'='*50}")
+
+        # Prepare data using ExperimentData
+        data = ExperimentData(
+            fitness_fn_name=fn_name,
+            dimension=config.data.dimension,
+            n_train=config.data.n_train,
+            n_test=config.data.n_test,
+            val_fraction=config.data.val_fraction,
+            noise_variance=config.data.noise_variance,
+            seed=config.experiment.seed,
+        )
+        data.prepare()
+
+        for kernel_name in config.model.kernels:
+            # ========== ExactGP ==========
+            current += 1
+            if not args.quiet:
+                print(f"\n[{current}/{total}] ExactGP - {kernel_name}")
+            for factor in config.model.noise_variance_model_factors:
+                noise_variance_model = factor * config.data.noise_variance
+                result = train_exactgp(
+                    data=data,
+                    kernel_name=kernel_name,
+                    config=config,
+                    device=device,
+                    fn_name=fn_name,
+                    collector=collector,
+                    noise_variance_model=noise_variance_model,
+                    factor=factor
+                )
+                if result is not None:
+                    collector.add_result(result)
+
+            # ========== PairwiseGP ==========
+            current += 1
+            if not args.quiet:
+                print(f"\n[{current}/{total}] PairwiseGP - {kernel_name}")
+
+            result = train_pairwisegp(
+                data=data,
+                kernel_name=kernel_name,
+                config=config,
+                device=device,
+                fn_name=fn_name,
+                collector=collector,
+            )
+            if result is not None:
+                collector.add_result(result)
+
+    # --- Save results ---
+    if not args.quiet:
+        print(f"\n{'='*50}")
+        print("Saving results...")
+
+    collector.save()
+
+    print(f"\nExperiment complete. Results saved to: {output_dir}")
 
 
 if __name__ == "__main__":

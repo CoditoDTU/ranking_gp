@@ -10,7 +10,7 @@ from typing import Tuple, Optional
 def get_comparisons(
     y_dp: torch.Tensor,
     X: Optional[torch.Tensor] = None,
-    epsilon: float = 0
+    epsilon: float = 0.1
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
     Generate pairwise comparisons from y values.
