@@ -387,13 +387,12 @@ def _plot_metrics_grid_noise_variance(
     title_suffix: str = "",
 ):
     """
-    Plot a 3xN grid of metrics vs noise_variance.
+    Plot a 2xN grid of metrics vs noise_variance.
 
     Layout:
         - Columns: One per GP type (ExactGP variants + PairwiseGP)
         - Row 1: Test MLL vs noise_variance
-        - Row 2: Normalized MLL vs noise_variance (z-score per fitness function)
-        - Row 3: Kendall Tau vs noise_variance
+        - Row 2: Kendall Tau vs noise_variance
 
     Args:
         df: DataFrame with normalized MLL column.
@@ -407,11 +406,17 @@ def _plot_metrics_grid_noise_variance(
     pairwise_types = [t for t in all_gp_types if t.startswith("PairwiseGP")]
     gp_types = exactgp_types + pairwise_types
 
+    # Set Arial font for all text
+    plt.rcParams['font.family'] = 'Arial'
+
+    axis_fontsize = 20
+    title_fontsize = 24
+    scale_fontsize = 16
     n_cols = len(gp_types)
     if n_cols == 0:
         return
 
-    fig, axes = plt.subplots(3, n_cols, figsize=(5 * n_cols, 12))
+    fig, axes = plt.subplots(2, n_cols, figsize=(6 * n_cols, 12))
     if n_cols == 1:
         axes = axes.reshape(-1, 1)
 
@@ -441,39 +446,16 @@ def _plot_metrics_grid_noise_variance(
                 label=fitness_fn,
             )
 
-        ax.set_xlabel("Noise Variance (σ²)")
-        ax.set_ylabel("Test MLL")
-        ax.set_title(f"{gp_type}: Test MLL{title_suffix}")
+        ax.set_xlabel("Noise Variance (σ²)", fontsize=axis_fontsize)
+        ax.set_ylabel("Test MLL", fontsize=axis_fontsize)
+        ax.set_title(f"{gp_type}: Test MLL{title_suffix}", fontsize=title_fontsize)
+        ax.tick_params(axis='both', labelsize=scale_fontsize)
         ax.grid(True, alpha=0.3)
-        if col_idx == n_cols - 1 and len(plot_fns) > 1:
-            ax.legend(loc="best", fontsize=7, ncol=2)
+        # if col_idx == n_cols - 1 and len(plot_fns) > 1:
+        #     ax.legend(loc="best", fontsize=14, ncol=2)
 
-        # Row 2: Normalized MLL vs noise_variance
+        # Row 2: Kendall Tau vs noise_variance
         ax = axes[1, col_idx]
-        for fitness_fn in plot_fns:
-            subset = gp_df[gp_df["fitness_fn"] == fitness_fn]
-            stats = subset.groupby("noise_variance")["test_mll_normalized"].agg(["mean", "std"])
-
-            ax.errorbar(
-                stats.index,
-                stats["mean"],
-                yerr=stats["std"],
-                marker="o",
-                capsize=3,
-                capthick=1,
-                label=fitness_fn,
-            )
-
-        ax.set_xlabel("Noise Variance (σ²)")
-        ax.set_ylabel("Normalized Test MLL (z-score)")
-        ax.set_title(f"{gp_type}: Normalized MLL{title_suffix}")
-        ax.grid(True, alpha=0.3)
-        ax.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
-        if col_idx == n_cols - 1 and len(plot_fns) > 1:
-            ax.legend(loc="best", fontsize=7, ncol=2)
-
-        # Row 3: Kendall Tau vs noise_variance
-        ax = axes[2, col_idx]
         for fitness_fn in plot_fns:
             subset = gp_df[gp_df["fitness_fn"] == fitness_fn]
             stats = subset.groupby("noise_variance")["kendall_tau"].agg(["mean", "std"])
@@ -488,31 +470,31 @@ def _plot_metrics_grid_noise_variance(
                 label=fitness_fn,
             )
 
-        ax.set_xlabel("Noise Variance (σ²)")
-        ax.set_ylabel("Kendall Tau")
-        ax.set_title(f"{gp_type}: Kendall Tau{title_suffix}")
+        ax.set_xlabel("Noise Variance (σ²)", fontsize=axis_fontsize)
+        ax.set_ylabel("Kendall Tau", fontsize=axis_fontsize)
+        ax.set_title(f"{gp_type}: Kendall Tau{title_suffix}", fontsize=title_fontsize)
+        ax.tick_params(axis='both', labelsize=scale_fontsize)
         ax.grid(True, alpha=0.3)
-        if col_idx == n_cols - 1 and len(plot_fns) > 1:
-            ax.legend(loc="best", fontsize=7, ncol=2)
+        # if col_idx == n_cols - 1 and len(plot_fns) > 1:
+        #     ax.legend(loc="best", fontsize=7, ncol=2)
 
-    plt.tight_layout()
+    plt.tight_layout(h_pad=6.0)
     plt.savefig(output_path, bbox_inches="tight")
     plt.close()
 
 
 def plot_mll_vs_noise_variance(df: pd.DataFrame, output_dir: Path):
     """
-    Plot MLL and Kendall Tau vs noise_variance in 3x2 grids.
+    Plot MLL and Kendall Tau vs noise_variance in 2xN grids.
 
     Creates:
     - metrics_vs_noise_variance.pdf: Combined plot with all fitness functions
     - metrics_vs_noise_variance_{fitness_fn}.pdf: Individual plot per fitness function
 
     Layout:
-        - Columns: ExactGP, PairwiseGP
+        - Columns: ExactGP variants + PairwiseGP
         - Row 1: Test MLL vs noise_variance
-        - Row 2: Normalized MLL vs noise_variance (z-score per fitness function)
-        - Row 3: Kendall Tau vs noise_variance
+        - Row 2: Kendall Tau vs noise_variance
 
     Error bars represent std across seeds at each noise_variance level.
 

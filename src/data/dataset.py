@@ -162,15 +162,7 @@ class ExperimentData:
 
     def noise(self) -> 'ExperimentData':
         """
-        Apply SNR-based noise to all splits.
-
-        Computes noise variance as: sigma^2_noise = sigma^2_signal / SNR
-        Then applies Gaussian noise: y_noisy = y_true + N(0, sqrt(sigma^2_noise))
-
-        If SNR is infinity, no noise is applied (y_noisy = y_true).
-
-        Note: If standardize() was called, signal_variance will be ~1.0,
-        so noise_variance ≈ 1/SNR directly.
+        Applies noise variance directly to the true signal to all datasplits
 
         Returns:
             self for method chaining.
@@ -180,7 +172,6 @@ class ExperimentData:
         self.signal_variance = self.Y_train_true.var().item()
 
        
-            # Compute noise variance: sigma^2_noise = sigma^2_signal / SNR
             
         noise_std = np.sqrt(self.noise_variance)
 

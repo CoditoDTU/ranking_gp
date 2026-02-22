@@ -2,17 +2,17 @@
 # Fixed learning rates, varying training set size
 
 # Seeds for reproducibility
-seeds: [42]
+seeds: [0,1,2,3,4,5]
 
 # Training set sizes (30 to 120 in increments of 10)
-n_trains: [256, 512]
+n_trains: [30,40,50,60,70,80,90,100,110,120]
 
 # Fixed learning rates (from previous grid search results)
 exact_lr: 0.5
 pairwise_lr: 0.01
 
-# SNR to use (moderate noise)
-snr: 10.0
+# Noise variance for data generation
+noise_variance: 0.3
 
 # Base experiment config file (relative to project root)
 base_config: "configs/config_new.yaml"

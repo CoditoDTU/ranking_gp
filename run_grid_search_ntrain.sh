@@ -60,7 +60,7 @@ seeds = config.get('seeds', [42])
 n_trains = config.get('n_trains', [50])
 exact_lr = config.get('exact_lr', 0.5)
 pairwise_lr = config.get('pairwise_lr', 0.01)
-snr = config.get('snr', 10.0)
+noise_variance = config.get('noise_variance', 0.5)
 base_config = config.get('base_config', 'configs/config_new.yaml')
 
 # Convert to space-separated strings for bash arrays
@@ -68,7 +68,7 @@ print(f"SEEDS=({' '.join(str(s) for s in seeds)})")
 print(f"N_TRAINS=({' '.join(str(n) for n in n_trains)})")
 print(f"EXACT_LR={exact_lr}")
 print(f"PAIRWISE_LR={pairwise_lr}")
-print(f"SNR={snr}")
+print(f"NOISE_VARIANCE={noise_variance}")
 print(f'CONFIG="{base_config}"')
 EOF
 }
@@ -108,7 +108,7 @@ echo "Seeds: ${SEEDS[*]}"
 echo "N_trains: ${N_TRAINS[*]}"
 echo "ExactGP LR: $EXACT_LR (fixed)"
 echo "PairwiseGP LR: $PAIRWISE_LR (fixed)"
-echo "SNR: $SNR"
+echo "Noise variance: $NOISE_VARIANCE"
 echo "Base config: $CONFIG"
 echo "Started at: $(date)"
 echo "=========================================="
@@ -180,7 +180,7 @@ for seed in "${SEEDS[@]}"; do
         python run_experiments.py \
             --config "$CONFIG" \
             --seed "$seed" \
-            --snr "$SNR" \
+            --noise_variance "$NOISE_VARIANCE" \
             --n_train "$n_train" \
             --exact_lr "$EXACT_LR" \
             --pairwise_lr "$PAIRWISE_LR" \
