@@ -30,10 +30,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from src.visualization import (
-    plot_mll_vs_snr,
     plot_mll_vs_ntrain,
     plot_mll_vs_noise_variance,
-    plot_normalized_mll_vs_snr,
     plot_comparison_heatmap,
 )
 
@@ -46,11 +44,12 @@ def parse_experiment_name(exp_name: str) -> dict:
     - exp_0_sigma_0.1_Adam -> {seed: 0, noise_variance: 0.1, optimizer: 'Adam'}
     - exp_0_n_30 -> {seed: 0, n_train: 30}
     - exp_1_sigma_0.5_n_50 -> {seed: 1, noise_variance: 0.5, n_train: 50}
+    - exp_s42_n256 -> {seed: 42, n_train: 256}  (n_train grid search format)
     """
     result = {}
 
-    # Extract seed: exp_{number}_
-    seed_match = re.search(r'^exp_(\d+)_', exp_name)
+    # Extract seed: exp_{number}_ or exp_s{number}_ (supports both formats)
+    seed_match = re.search(r'^exp_s?(\d+)_', exp_name)
     if seed_match:
         result['seed'] = int(seed_match.group(1))
 
@@ -59,8 +58,8 @@ def parse_experiment_name(exp_name: str) -> dict:
     if sigma_match:
         result['noise_variance'] = float(sigma_match.group(1))
 
-    # Extract n_train: n_{number}
-    ntrain_match = re.search(r'_n_(\d+)', exp_name)
+    # Extract n_train: n_{number} or n{number} (underscore after n is optional)
+    ntrain_match = re.search(r'_n_?(\d+)', exp_name)
     if ntrain_match:
         result['n_train'] = int(ntrain_match.group(1))
 
@@ -405,14 +404,12 @@ def main():
     print("\nGenerating plots...")
 
     for x_var in grid_vars:
-        use_log_x = (x_var == 'snr_data')
-
         # Main performance plots
-        plot_performance_vs_variable(df, grid_dir, x_var, 'kendall_tau', use_log_x)
-        plot_performance_vs_variable(df, grid_dir, x_var, 'spearman', use_log_x)
+        plot_performance_vs_variable(df, grid_dir, x_var, 'kendall_tau')
+        plot_performance_vs_variable(df, grid_dir, x_var, 'spearman')
 
         # By kernel breakdown
-        plot_performance_by_kernel(df, grid_dir, x_var, 'kendall_tau', use_log_x)
+        plot_performance_by_kernel(df, grid_dir, x_var, 'kendall_tau')
 
         # Heatmaps
         plot_heatmap(df, grid_dir, x_var, 'kendall_tau')

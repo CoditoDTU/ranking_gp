@@ -225,24 +225,29 @@ def _plot_metrics_grid_ntrain(
     title_suffix: str = "",
 ):
     """
-    Plot a 3x2 grid of metrics vs n_train.
+    Plot a 2x4 grid of metrics vs n_train.
 
     Layout:
-        - Columns: ExactGP, PairwiseGP
+        - Columns: ExactGP_0.5x, ExactGP_1.0x, ExactGP_2.0x, PairwiseGP
         - Row 1: Test MLL vs n_train
-        - Row 2: Normalized MLL vs n_train (z-score per fitness function)
-        - Row 3: Kendall Tau vs n_train
+        - Row 2: Kendall Tau vs n_train
 
     Args:
-        df: DataFrame with normalized MLL column.
+        df: DataFrame with results.
         output_path: Full path to save the plot.
         fitness_fns: List of fitness functions to include. If None, use all.
         title_suffix: Suffix to add to plot titles.
     """
-    gp_types = ["ExactGP", "PairwiseGP"]
-    fig, axes = plt.subplots(3, 2, figsize=(14, 12))
+    gp_types = ["ExactGP_0.5x", "ExactGP_1.0x", "ExactGP_2.0x", "PairwiseGP"]
+    gp_labels = ["ExactGP 0.5x", "ExactGP 1.0x", "ExactGP 2.0x", "PairwiseGP"]
 
-    for col_idx, gp_type in enumerate(gp_types):
+    fig, axes = plt.subplots(2, 4, figsize=(20, 8))
+
+    title_fontsize = 20
+    axis_fontsize = 18
+    tick_fontsize = 16
+
+    for col_idx, (gp_type, gp_label) in enumerate(zip(gp_types, gp_labels)):
         gp_df = df[df["gp_type"] == gp_type]
         if gp_df.empty:
             continue
@@ -268,39 +273,14 @@ def _plot_metrics_grid_ntrain(
                 label=fitness_fn,
             )
 
-        ax.set_xlabel("$n_{train}$")
-        ax.set_ylabel("Test MLL")
-        ax.set_title(f"{gp_type}: Test MLL vs $n_{{train}}${title_suffix}")
+        ax.set_xlabel("$n_{train}$", fontsize=axis_fontsize)
+        ax.set_ylabel("Test MLL", fontsize=axis_fontsize)
+        ax.set_title(f"{gp_label}: Test MLL{title_suffix}", fontsize=title_fontsize)
+        ax.tick_params(axis='both', labelsize=tick_fontsize)
         ax.grid(True, alpha=0.3)
-        if col_idx == 1 and len(plot_fns) > 1:
-            ax.legend(loc="best", fontsize=7, ncol=2)
 
-        # Row 2: Normalized MLL vs n_train
+        # Row 2: Kendall Tau vs n_train
         ax = axes[1, col_idx]
-        for fitness_fn in plot_fns:
-            subset = gp_df[gp_df["fitness_fn"] == fitness_fn]
-            stats = subset.groupby("n_train")["test_mll_normalized"].agg(["mean", "std"])
-
-            ax.errorbar(
-                stats.index,
-                stats["mean"],
-                yerr=stats["std"],
-                marker="o",
-                capsize=3,
-                capthick=1,
-                label=fitness_fn,
-            )
-
-        ax.set_xlabel("$n_{train}$")
-        ax.set_ylabel("Normalized Test MLL (z-score)")
-        ax.set_title(f"{gp_type}: Normalized MLL vs $n_{{train}}${title_suffix}")
-        ax.grid(True, alpha=0.3)
-        ax.axhline(y=0, color="gray", linestyle="--", alpha=0.5)
-        if col_idx == 1 and len(plot_fns) > 1:
-            ax.legend(loc="best", fontsize=7, ncol=2)
-
-        # Row 3: Kendall Tau vs n_train
-        ax = axes[2, col_idx]
         for fitness_fn in plot_fns:
             subset = gp_df[gp_df["fitness_fn"] == fitness_fn]
             stats = subset.groupby("n_train")["kendall_tau"].agg(["mean", "std"])
@@ -315,31 +295,34 @@ def _plot_metrics_grid_ntrain(
                 label=fitness_fn,
             )
 
-        ax.set_xlabel("$n_{train}$")
-        ax.set_ylabel("Kendall Tau")
-        ax.set_title(f"{gp_type}: Kendall Tau vs $n_{{train}}${title_suffix}")
+        ax.set_xlabel("$n_{train}$", fontsize=axis_fontsize)
+        ax.set_ylabel("Kendall Tau", fontsize=axis_fontsize)
+        ax.set_title(f"{gp_label}: Kendall Tau{title_suffix}", fontsize=title_fontsize)
+        ax.tick_params(axis='both', labelsize=tick_fontsize)
         ax.grid(True, alpha=0.3)
-        if col_idx == 1 and len(plot_fns) > 1:
-            ax.legend(loc="best", fontsize=7, ncol=2)
 
-    plt.tight_layout()
+    # # Add legend to last column
+    # handles, labels = axes[0, -1].get_legend_handles_labels()
+    # if handles:
+    #     fig.legend(handles, labels, loc='center right', fontsize=8, bbox_to_anchor=(1.02, 0.5))
+
+    plt.tight_layout(rect=[0, 0, 0.92, 1])
     plt.savefig(output_path, bbox_inches="tight")
     plt.close()
 
 
 def plot_mll_vs_ntrain(df: pd.DataFrame, output_dir: Path):
     """
-    Plot MLL and Kendall Tau vs n_train in 3x2 grids.
+    Plot MLL and Kendall Tau vs n_train in 2x4 grids.
 
     Creates:
     - metrics_vs_ntrain.pdf: Combined plot with all fitness functions
     - metrics_vs_ntrain_{fitness_fn}.pdf: Individual plot per fitness function
 
     Layout:
-        - Columns: ExactGP, PairwiseGP
+        - Columns: ExactGP_0.5x, ExactGP_1.0x, ExactGP_2.0x, PairwiseGP
         - Row 1: Test MLL vs n_train
-        - Row 2: Normalized MLL vs n_train (z-score per fitness function)
-        - Row 3: Kendall Tau vs n_train
+        - Row 2: Kendall Tau vs n_train
 
     Error bars represent std across seeds at each n_train level.
 
@@ -349,9 +332,6 @@ def plot_mll_vs_ntrain(df: pd.DataFrame, output_dir: Path):
     """
     plots_dir = Path(output_dir) / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
-
-    # Normalize MLL per fitness function
-    df = normalize_mll_zscore(df, "test_mll")
 
     # Get all fitness functions
     all_fitness_fns = sorted(df["fitness_fn"].unique())
